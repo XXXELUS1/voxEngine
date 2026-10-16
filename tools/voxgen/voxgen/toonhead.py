@@ -28,6 +28,15 @@ Interior (fine grid, hair treated as air): BFS depth from the air -> skin (1), f
 (3), bone (>= 4); nose and ears are cartilage below the skin; eye and tooth voxels keep their
 material through the depth of their design voxel.
 
+The ``real`` preset (owner feedback on the first sheet: ``toon`` creepy with its anime eyes and
+stub chin, ``normal`` flat) keeps the designed 1 cm form but with canon proportions (eyes at
+mid-height, one eye width apart, mouth as wide as the pupils are apart, nose base a third of the
+way from the eyes to the chin, ears from brow to nose base), a boxier cranium, a jaw one step
+behind the face plane with the chin block flush (a real chin, not a stub), a slim tapered nose,
+and draws the face at 5 mm with :mod:`voxgen.facedetail` (``fine_details``): human-sized eyes,
+one-row brows, a bridge ridge, nostril dots, a mouth line with lips, an ear spot - the same
+vocabulary as :mod:`voxgen.hybridhead`, so the two candidates differ only in the form.
+
 Decisions (the specs are silent on a designed head): design voxel = 2 fine voxels (fixed);
 the highlight is one design voxel (2x2 fine) on the same screen side for both eyes (colour only,
 so the material field stays mirror-symmetric); brows are painted (skin) when flush and MAT_HAIR
@@ -36,12 +45,13 @@ when they protrude; stubble is a flat tint on a coarse beard mask.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
 from . import materials as M
 from .body import shift
+from .facedetail import FaceDetailParams, FaceLandmarks, apply_face_details
 from .head_from_mesh import depth_map, keep_largest_component, upsample
 from .model import Model, Part
 from .palette import Palette
@@ -67,7 +77,9 @@ HAIR_TONES = {
 }
 IRIS_TONES = {"blue": (66, 118, 186), "brown": (96, 60, 38), "green": (74, 128, 84)}
 
-PRESETS = ("normal", "toon")
+PRESETS = ("normal", "toon", "real")
+#: ear_size -> (width, height) of the ear block in design voxels (depth is always 2)
+EAR_SIZES = {1: (1, 3), 2: (2, 4), 3: (1, 5)}
 HAIR_STYLES = ("short", "bangs", "bald")
 EXPRESSIONS = ("neutral", "stern", "happy")
 #: expression -> (brow_angle: -1 inner ends lower, 0 flat, +1 inner ends higher;
@@ -94,7 +106,8 @@ class ToonHeadParams:
     face_y0: int = 5         # face box bottom row (the nose base); it reaches the brow top
     jaw_w: int = 11          # jaw box width (odd)
     jaw_h: int = 7           # jaw box rows 0 .. jaw_h - 1
-    jaw_d: int = 10          # jaw box depth from the face plane
+    jaw_d: int = 10          # jaw box depth from its front
+    jaw_z: int = 0           # front of the jaw box (1 = one step behind the face plane: the chin block then protrudes)
     chin: int = 1            # 0 none, 1 flush block filling the rounded chin, 2 also protrudes 1
     chin_w: int = 5          # chin block width (odd)
     neck_r: float = 3.5
@@ -107,6 +120,7 @@ class ToonHeadParams:
     nose_w: int = 3          # odd: width of the lower rows (the bridge row is one column)
     nose_h: int = 3
     nose_d: int = 2          # protrusion of the lower rows (the top row protrudes 1)
+    nose_taper: bool = False # only the bottom row is nose_w wide; the rows above are one column (a slim nose with wings)
     eye_y: int = 9           # eye white bottom row
     eye_x: int = 2           # inner column of the eye white (|x|)
     eye_w: int = 3
@@ -119,7 +133,7 @@ class ToonHeadParams:
     brow_angle: int | None = None
     mouth_corners: int | None = None
     ear_y: int = 8           # ear bottom row
-    ear_size: int = 1        # 1 -> 1w x 3h x 2d, 2 -> 2w x 4h x 2d
+    ear_size: int = 1        # EAR_SIZES: 1 -> 1w x 3h, 2 -> 2w x 4h, 3 -> 1w x 5h (all 2 deep)
     ear_z: int = 7           # front row of the ear
     expression: str = "neutral"
     # -- hair
@@ -135,11 +149,21 @@ class ToonHeadParams:
     hair_tone: str = "brown"
     cheeks: bool = False
     stubble: bool = False
+    # -- fine details (the ``real`` preset): the coarse eyes/brows/mouth/ear hole are replaced by
+    # the 5 mm vocabulary of voxgen.facedetail, placed on the design rows above
+    fine_details: bool = False
+    fine_eye_x: float = 5.5          # |X| of the eye centres in fine voxels (half-integer)
+    fine_mouth_half_w: float = 5.5   # |X| of the mouth corners in fine voxels
+    detail: FaceDetailParams = field(default_factory=FaceDetailParams)
 
     @classmethod
     def preset_params(cls, preset: str = "normal", **overrides) -> "ToonHeadParams":
-        """The two proportion presets: ``normal`` (human proportions, simplified forms) and
-        ``toon`` (bigger cranium, big eyes, small jaw, bigger nose and ears)."""
+        """The proportion presets: ``normal`` (human proportions, simplified forms), ``toon``
+        (bigger cranium, big eyes, small jaw, bigger nose and ears) and ``real`` (canon
+        proportions - eyes at mid-height, one eye width apart, mouth as wide as the pupils are
+        apart, nose base a third of the way from the eyes to the chin, ears from brow to nose
+        base - with a moderate caricature: nose x1.3, heavier brow step, defined jaw and a wide
+        chin, a boxier cranium, and the 5 mm fine-detail face instead of the big coarse eyes)."""
         if preset not in PRESETS:
             raise ValueError(f"unknown preset {preset!r}, expected one of {PRESETS}")
         p = cls(preset=preset)
@@ -151,6 +175,15 @@ class ToonHeadParams:
                 eye_y=8, eye_x=2, eye_w=5, eye_h=4, iris=3, brow_y=15, brow_w=5, brow_relief=1,
                 ear_y=7, ear_size=2, ear_z=8, hair_style="bangs", hair_thick=3, hair_side=2,
                 hair_back=2, hairline_y=19, bangs_y=17, cheeks=True)
+        elif preset == "real":
+            p = replace(
+                p, cranium_w=15, cranium_h=17, cranium_d=19, box_power=3.2, head_h=23,
+                face_w=13, face_round=2, face_y0=7, jaw_w=9, jaw_h=7, jaw_d=9, jaw_z=1, chin=1, chin_w=7,
+                neck_r=3.5, neck_rows=3, mouth_y=5, mouth_w=7, nose_y=7, nose_w=3, nose_h=4, nose_d=2,
+                nose_taper=True,
+                eye_y=11, eye_x=2, eye_w=3, eye_h=2, brow_y=13, brow_w=4, ear_y=8, ear_size=3, ear_z=7,
+                hair_style="short", hair_thick=2, hair_side=1, hair_back=2, hairline_y=17, clumps=False,
+                cheeks=True, fine_details=True)
         return replace(p, **overrides)
 
     def resolved_expression(self) -> tuple[int, int, bool]:
@@ -241,7 +274,7 @@ def make_palette(p: ToonHeadParams) -> Palette:
     pal.add("skin_shadow", shadow)
     pal.add("skin_ruddy", ruddy)
     pal.add("stubble", tuple(int(round(c * f)) for c, f in zip(skin, (0.86, 0.86, 0.90))))
-    pal.add("lips", tuple(int(round(0.7 * a + 0.3 * b)) for a, b in zip(skin, (168, 70, 78))))
+    pal.add("lips", tuple(int(round(0.58 * a + 0.42 * b)) for a, b in zip(skin, (168, 70, 78))))
     pal.add("line", (88, 54, 52))
     pal.add("hair", hair)
     pal.add("hair_light", hair_light)
@@ -273,7 +306,7 @@ def design_head(p: ToonHeadParams) -> Design:
     fw = (p.face_w - 1) // 2
     skin |= d.box(-fw, fw, p.face_y0, p.brow_y + 1, 0, int(rz), p.face_round)
     jw = (p.jaw_w - 1) // 2
-    skin |= d.box(-jw, jw, 0, p.jaw_h - 1, 0, p.jaw_d - 1, 2)
+    skin |= d.box(-jw, jw, 0, p.jaw_h - 1, p.jaw_z, p.jaw_z + p.jaw_d - 1, 2)
     if p.chin >= 1:
         cw = (p.chin_w - 1) // 2
         skin |= d.box(-cw, cw, 0, 1, 0 if p.chin == 1 else -1, 3)
@@ -287,13 +320,13 @@ def design_head(p: ToonHeadParams) -> Design:
     for i in range(p.nose_h):                      # i = 0 is the bottom row
         bridge = i == p.nose_h - 1 and p.nose_h >= 3
         prot = 1 if bridge else max(1, p.nose_d - max(0, i - (p.nose_h - 3)))
-        half = 0 if bridge else nxh
+        half = 0 if bridge or (p.nose_taper and i > 0) else nxh
         nose |= d.box(-half, half, p.nose_y + i, p.nose_y + i, -prot, -1)
     d.set(nose & ~d.solid(), M.MAT_SKIN, C("skin"))
     d.cartilage |= nose
 
     # ---- ears: blocks on the skull sides, 1-voxel darker hole on the outer face
-    ear_w, ear_h = (1, 3) if p.ear_size <= 1 else (2, 4)
+    ear_w, ear_h = EAR_SIZES[max(1, min(p.ear_size, max(EAR_SIZES)))]
     ear_rows = (d.Y >= p.ear_y) & (d.Y <= p.ear_y + ear_h - 1) & (d.Z >= p.ear_z) & (d.Z <= p.ear_z + 1)
     side = np.where(d.solid() & ear_rows, np.abs(d.X), -1)
     widest = int(side.max())
@@ -301,59 +334,63 @@ def design_head(p: ToonHeadParams) -> Design:
     d.set(ear & ~d.solid(), M.MAT_SKIN, C("skin"))
     d.cartilage |= ear
     hole = d.mirror(d.box(widest + ear_w, widest + ear_w, p.ear_y + 1, p.ear_y + 1, p.ear_z + 1, p.ear_z + 1))
-    d.col[hole & ear] = C("skin_shadow")
+    if not p.fine_details:
+        d.col[hole & ear] = C("skin_shadow")
 
-    # ---- eyes: recess one voxel, white block, iris toward the nose (top aligned), one highlight
-    eye_cols = d.columns(p.eye_x, p.eye_x + p.eye_w - 1, p.eye_y, p.eye_y + p.eye_h - 1)
-    front = d.front_face() & eye_cols
-    eye = shift(front, 0, 0, 1)
-    d.set(front, M.MAT_AIR, 0)
-    d.set(eye, M.MAT_EYE, C("eye_white"))
-    n = min(p.iris, p.eye_w, p.eye_h)
-    iris = eye & d.columns(p.eye_x, p.eye_x + n - 1, p.eye_y + p.eye_h - n, p.eye_y + p.eye_h - 1)
-    d.col[iris] = C("iris")
-    # highlight: top row, screen-left column of each iris (same side for both: one light source)
-    top = p.eye_y + p.eye_h - 1
-    hl = eye & (d.Y == top) & ((d.X == -(p.eye_x + n - 1)) | (d.X == p.eye_x))
-    d.col[hl] = C("highlight")
-    # dark lid line: the face voxel right above the white
-    lid = d.front_face() & d.columns(p.eye_x, p.eye_x + p.eye_w - 1, p.eye_y + p.eye_h, p.eye_y + p.eye_h)
-    d.col[lid & (d.mat == M.MAT_SKIN)] = C("line")
-
-    # ---- brows: bars; the inner half one row lower (-1) or higher (+1)
-    inner = p.brow_w // 2
-    brow = np.zeros(d.shape, bool)
-    for k in range(p.brow_w):
-        x = p.eye_x + k
-        y = p.brow_y + (brow_angle if k < inner else 0)
-        brow |= d.columns(x, x, y, y)
-    brow_face = d.front_face() & brow & (d.mat == M.MAT_SKIN)
-    if p.brow_relief >= 1:
-        bump = shift(brow_face, 0, 0, -1) & ~d.solid()
-        d.set(bump, M.MAT_HAIR, C("hair"))
-    else:
-        d.col[brow_face] = C("hair")
-
-    # ---- mouth: dark line, corners one row up (+1) / down (-1); lips row; teeth
     mw = (p.mouth_w - 1) // 2
-    mouth = d.box(-(mw - 1), mw - 1, p.mouth_y, p.mouth_y, -10 ** 6, 10 ** 6)
-    mouth |= d.columns(mw, mw, p.mouth_y + corners, p.mouth_y + corners)
-    mouth_face = d.front_face() & mouth & (d.mat == M.MAT_SKIN)
-    d.col[mouth_face] = C("line")
-    if p.lips:
-        lip = d.front_face() & d.box(-(mw - 2), mw - 2, p.mouth_y - 1, p.mouth_y - 1, -10 ** 6, 10 ** 6)
-        d.col[lip & (d.mat == M.MAT_SKIN)] = C("lips")
-    if teeth:
-        tooth_cols = d.box(-(mw - 2), mw - 2, p.mouth_y + 1, p.mouth_y + 1, -10 ** 6, 10 ** 6)
-        front = d.front_face() & tooth_cols & (d.mat == M.MAT_SKIN)
+    # ---- coarse features (the ``real`` preset draws them at 5 mm instead, see build_toon_head)
+    if not p.fine_details:
+        # ---- eyes: recess one voxel, white block, iris toward the nose (top aligned), one highlight
+        eye_cols = d.columns(p.eye_x, p.eye_x + p.eye_w - 1, p.eye_y, p.eye_y + p.eye_h - 1)
+        front = d.front_face() & eye_cols
+        eye = shift(front, 0, 0, 1)
         d.set(front, M.MAT_AIR, 0)
-        d.set(shift(front, 0, 0, 1), M.MAT_TOOTH, C("tooth"))
+        d.set(eye, M.MAT_EYE, C("eye_white"))
+        n = min(p.iris, p.eye_w, p.eye_h)
+        iris = eye & d.columns(p.eye_x, p.eye_x + n - 1, p.eye_y + p.eye_h - n, p.eye_y + p.eye_h - 1)
+        d.col[iris] = C("iris")
+        # highlight: top row, screen-left column of each iris (same side for both: one light source)
+        top = p.eye_y + p.eye_h - 1
+        hl = eye & (d.Y == top) & ((d.X == -(p.eye_x + n - 1)) | (d.X == p.eye_x))
+        d.col[hl] = C("highlight")
+        # dark lid line: the face voxel right above the white
+        lid = d.front_face() & d.columns(p.eye_x, p.eye_x + p.eye_w - 1, p.eye_y + p.eye_h, p.eye_y + p.eye_h)
+        d.col[lid & (d.mat == M.MAT_SKIN)] = C("line")
+
+        # ---- brows: bars; the inner half one row lower (-1) or higher (+1)
+        inner = p.brow_w // 2
+        brow = np.zeros(d.shape, bool)
+        for k in range(p.brow_w):
+            x = p.eye_x + k
+            y = p.brow_y + (brow_angle if k < inner else 0)
+            brow |= d.columns(x, x, y, y)
+        brow_face = d.front_face() & brow & (d.mat == M.MAT_SKIN)
+        if p.brow_relief >= 1:
+            bump = shift(brow_face, 0, 0, -1) & ~d.solid()
+            d.set(bump, M.MAT_HAIR, C("hair"))
+        else:
+            d.col[brow_face] = C("hair")
+
+        # ---- mouth: dark line, corners one row up (+1) / down (-1); lips row; teeth
+        mouth = d.box(-(mw - 1), mw - 1, p.mouth_y, p.mouth_y, -10 ** 6, 10 ** 6)
+        mouth |= d.columns(mw, mw, p.mouth_y + corners, p.mouth_y + corners)
+        mouth_face = d.front_face() & mouth & (d.mat == M.MAT_SKIN)
+        d.col[mouth_face] = C("line")
+        if p.lips:
+            lip = d.front_face() & d.box(-(mw - 2), mw - 2, p.mouth_y - 1, p.mouth_y - 1, -10 ** 6, 10 ** 6)
+            d.col[lip & (d.mat == M.MAT_SKIN)] = C("lips")
+        if teeth:
+            tooth_cols = d.box(-(mw - 2), mw - 2, p.mouth_y + 1, p.mouth_y + 1, -10 ** 6, 10 ** 6)
+            front = d.front_face() & tooth_cols & (d.mat == M.MAT_SKIN)
+            d.set(front, M.MAT_AIR, 0)
+            d.set(shift(front, 0, 0, 1), M.MAT_TOOTH, C("tooth"))
+
+        if p.cheeks:
+            cheek = d.front_face() & d.columns(p.eye_x + 1, p.eye_x + 2, p.nose_y, p.nose_y + 1)
+            d.col[cheek & (d.col == C("skin"))] = C("skin_ruddy")
 
     # ---- painted shadow: the neck's top row (the chin's cast shadow)
     d.col[(d.mat == M.MAT_SKIN) & (d.Y == -1) & (d.col == C("skin"))] = C("skin_shadow")
-    if p.cheeks:
-        cheek = d.front_face() & d.columns(p.eye_x + 1, p.eye_x + 2, p.nose_y, p.nose_y + 1)
-        d.col[cheek & (d.col == C("skin"))] = C("skin_ruddy")
 
     # ---- beard mask (fine-grid stubble tint): chin, jaw sides, upper lip; not the lips or neck
     chin_zone = (d.Y >= 0) & (d.Y <= p.mouth_y - 2)
@@ -397,6 +434,32 @@ def design_head(p: ToonHeadParams) -> Design:
 
 
 # ---------------------------------------------------------------------------- fine grid
+def fine_landmarks(p: ToonHeadParams, d: Design) -> FaceLandmarks:
+    """Design rows -> 5 mm landmarks for :func:`voxgen.facedetail.apply_face_details`: a design
+    row ``Y`` covers the fine rows ``2 (Y + y0)`` and ``+ 1``; the eye centre is the top fine row
+    of ``eye_y``, the bridge ridge runs from the eyes down to two rows above the nose base."""
+    k = UPSAMPLE
+    fy = lambda y: k * (int(y) + d.y0)
+    ear_h = EAR_SIZES[max(1, min(p.ear_size, max(EAR_SIZES)))][1]
+    return FaceLandmarks(
+        eye_x=float(p.fine_eye_x), eye_y=fy(p.eye_y) + 1, brow_y=fy(p.brow_y) + 1,
+        nose_top_y=fy(p.eye_y), nose_base_y=fy(p.nose_y), nostril_x=1.5,
+        mouth_y=fy(p.mouth_y), mouth_half_w=float(p.fine_mouth_half_w),
+        ear_y=fy(p.ear_y) + ear_h, ear_z=k * (p.ear_z + d.z0) + 1, cheek_y=fy(p.nose_y))
+
+
+def fine_colors(C) -> dict[str, int]:
+    return {"skin": C("skin"), "skin_shadow": C("skin_shadow"), "skin_ruddy": C("skin_ruddy"),
+            "lips": C("lips"), "line": C("line"), "brow": C("hair"),
+            "eye_white": C("eye_white"), "iris": C("iris"), "highlight": C("highlight")}
+
+
+def fine_detail_params(p: ToonHeadParams) -> FaceDetailParams:
+    """The expression drives the brow tilt and the mouth corners; ``cheeks`` the ruddy band."""
+    brow_angle, corners, _teeth = p.resolved_expression()
+    return replace(p.detail, brow_tilt=-brow_angle, mouth_corners=corners, cheeks=p.cheeks)
+
+
 def build_toon_head(params: ToonHeadParams | None = None, fine_voxel: float = 0.005,
                     name: str | None = None) -> Model:
     """Design the head on the 1 cm grid, upsample x2 to ``fine_voxel`` and layer the inside.
@@ -415,6 +478,9 @@ def build_toon_head(params: ToonHeadParams | None = None, fine_voxel: float = 0.
     col = upsample(d.col, k)
     cart = upsample(d.cartilage, k)
     beard = upsample(d.beard, k)
+    details: dict = {}
+    if p.fine_details:
+        details = apply_face_details(mat, col, fine_landmarks(p, d), fine_colors(C), fine_detail_params(p))
 
     # tissues by depth (hair is air for the skin: the scalp under it stays skin)
     tissue = mat != M.MAT_AIR
@@ -441,4 +507,6 @@ def build_toon_head(params: ToonHeadParams | None = None, fine_voxel: float = 0.
                   meta={"generator": "toonhead", "preset": p.preset, "design_voxel_m": k * vs})
     model.add_part(part)
     model.meta["crumbs_removed"] = keep_largest_component(part)
+    if details:
+        model.meta["details"] = details
     return model

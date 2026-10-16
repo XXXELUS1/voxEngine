@@ -1,10 +1,14 @@
-"""The MakeHuman-based head (voxgen.mh, meshvox, head_from_mesh)."""
+"""The MakeHuman-based heads: voxgen.mh, meshvox, head_from_mesh, and the hybrid head
+(voxgen.hybridhead: coarse form from the morphed mesh, fine designed details)."""
 import numpy as np
 import pytest
 
 from voxgen import checks, meshvox, mh
 from voxgen.body import dilate, exposed
+from voxgen import mh_targets
+from voxgen.body import exposed as exposed_mask
 from voxgen.head_from_mesh import HeadParams, build_head
+from voxgen.hybridhead import DEFAULT_MORPHS, HybridHeadParams, build_hybrid_head, quantize_form
 from voxgen.materials import MAT_AIR, MAT_BONE, MAT_EYE, MAT_HAIR, MAT_SKIN, MAT_TOOTH
 from voxgen.objmesh import ObjMesh
 
@@ -73,3 +77,58 @@ def test_head_mh_eyes_visible_and_symmetric(head):
     assert (eye & exposed(part.material != MAT_AIR)).sum() >= 4
     mat = part.material
     assert np.array_equal(mat, mat[:, :, ::-1])
+
+
+# ---------------------------------------------------------------------------- hybrid head
+
+@pytest.fixture(scope="module")
+def hybrid():
+    return build_hybrid_head(HybridHeadParams(), name="t_hybrid")
+
+
+def test_hybrid_targets_are_bundled():
+    for rel, _w in mh_targets.files_for(DEFAULT_MORPHS):
+        assert mh_targets.target_path(rel, download=False).is_file(), rel
+
+
+def test_hybrid_builds_symmetric_and_layered(hybrid):
+    part = hybrid.part("head")
+    mat = part.material
+    hist = part.material_histogram()
+    assert hist[MAT_EYE] == 30 and hist[MAT_HAIR] > 1000 and hist[MAT_SKIN] > hist[MAT_EYE]
+    assert np.array_equal(mat, mat[:, :, ::-1])
+    solid = mat != MAT_AIR
+    ex = exposed_mask(solid)
+    assert not (ex & (mat == MAT_BONE)).any()
+    assert part.voxel_size == 0.005 and -0.05 < part.origin[1] < 0.0        # chin near y = 0, neck below
+    report = checks.run(hybrid)
+    assert report["errors"] == [] and report["warnings"] == [], report
+    d = hybrid.meta["details"]
+    assert d["eye"] == 30 and d["nostril"] == 2 and d["brow"] == 16 and d["mouth"] > 0 and d["strands"] > 0
+    assert hybrid.meta["form"]["bumps_removed"] >= 0 and hybrid.meta["form"]["leak"] is False
+    # the form is 1 cm blocks: skin + inner tissues (hair and the fine details aside) is 2x2x2-aligned
+    # except where the details carved it: compare the coarse majority with the fine field
+    body = solid & (mat != MAT_HAIR)
+    coarse = body[::2, ::2, ::2]
+    up = coarse.repeat(2, 0).repeat(2, 1).repeat(2, 2)
+    assert (body != up).sum() < 0.02 * body.sum()
+
+
+def test_hybrid_quantize_removes_bumps_and_pits():
+    s = np.zeros((9, 9, 9), bool)
+    s[2:, :, :] = True
+    s[1, 4, 4] = True          # a lone bump
+    s[2, 1, 1] = False         # a one-voxel pit
+    q, info = quantize_form(s)
+    assert info == {"bumps_removed": 1, "pits_filled": 1}
+    assert not q[1, 4, 4] and q[2, 1, 1] and q[2:].all()
+    assert np.array_equal(q, q[:, :, ::-1])
+
+
+def test_hybrid_knobs():
+    m = build_hybrid_head(HybridHeadParams(hair=False, stubble=True), name="t_bald")
+    part = m.part("head")
+    assert MAT_HAIR not in part.material_histogram()
+    assert m.palette.index("stubble") in set(np.unique(part.color).tolist())
+    with pytest.raises(ValueError):
+        build_hybrid_head(HybridHeadParams(), fine_voxel=0.003)

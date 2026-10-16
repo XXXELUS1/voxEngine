@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- voxEngine Lab icon: a skin-coloured voxel cube with one freshly cut (red) voxel. -->
+  <rect width="128" height="128" rx="20" fill="#2b2622"/>
+  <g transform="translate(64 66)">
+    <!-- top face -->
+    <polygon points="0,-44 40,-22 0,0 -40,-22" fill="#e8c2a4"/>
+    <!-- left face -->
+    <polygon points="-40,-22 0,0 0,44 -40,22" fill="#c08f6e"/>
+    <!-- right face -->
+    <polygon points="40,-22 0,0 0,44 40,22" fill="#a9755a"/>
+    <!-- voxel grid lines -->
+    <g stroke="#2b2622" stroke-width="2" stroke-opacity="0.35" fill="none">
+      <polyline points="-20,-33 20,-11 20,33"/>
+      <polyline points="20,-33 -20,-11 -20,33"/>
+      <polyline points="-40,0 0,22 40,0"/>
+      <line x1="0" y1="0" x2="0" y2="44"/>
+    </g>
+    <!-- one cut-out voxel on the right face, blood red -->
+    <polygon points="0,0 20,-11 20,11 0,22" fill="#7a1010"/>
+    <polygon points="0,0 20,-11 20,11 0,22" fill="none" stroke="#2b2622" stroke-width="2" stroke-opacity="0.5"/>
+  </g>
+</svg>

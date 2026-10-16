@@ -1,0 +1,22 @@
+; voxbody GDExtension descriptor.
+; Library names follow the godot-cpp suffix: libvoxbody.<platform>.<target>.<arch>.<ext>
+; (see src/voxbody/SConstruct). Build with `scons target=template_debug|template_release`
+; from src/voxbody; outputs land in this bin/ folder.
+; macOS builds are universal frameworks (arch "universal"), so one entry per target.
+
+[configuration]
+
+entry_symbol = "voxbody_library_init"
+compatibility_minimum = "4.7"
+reloadable = true
+
+[libraries]
+
+linux.debug.x86_64 = "res://addons/voxbody/bin/libvoxbody.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://addons/voxbody/bin/libvoxbody.linux.template_release.x86_64.so"
+linux.debug.arm64 = "res://addons/voxbody/bin/libvoxbody.linux.template_debug.arm64.so"
+linux.release.arm64 = "res://addons/voxbody/bin/libvoxbody.linux.template_release.arm64.so"
+windows.debug.x86_64 = "res://addons/voxbody/bin/libvoxbody.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://addons/voxbody/bin/libvoxbody.windows.template_release.x86_64.dll"
+macos.debug = "res://addons/voxbody/bin/libvoxbody.macos.template_debug.framework"
+macos.release = "res://addons/voxbody/bin/libvoxbody.macos.template_release.framework"

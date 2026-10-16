@@ -97,6 +97,9 @@ public:
 	Ref<VoxelVolume> duplicate_volume() const;
 
 	Vector3i get_dims() const { return Vector3i(nx, ny, nz); }
+	// Re-creates the volume (clears all voxels) when the size changes. Used by
+	// the storage property so a saved resource restores dims before its data.
+	void set_dims(Vector3i p_dims);
 	int get_voxel_count() const { return nx * ny * nz; }
 	void set_voxel_size(float v) { voxel_size = v; }
 	float get_voxel_size() const { return voxel_size; }
@@ -130,6 +133,8 @@ public:
 	int depth() const { return nz; }
 
 	int count_solid() const;
+	// Bounding box of solid voxels (inclusive). For an empty volume
+	// get_solid_min() returns dims and get_solid_max() returns (-1,-1,-1).
 	Vector3i get_solid_min() const;
 	Vector3i get_solid_max() const;
 
@@ -140,7 +145,7 @@ public:
 	int carve_sphere(Vector3 center, float radius, bool mark_wound = true);
 	// Raise bruise level to at least `level` for bruisable surface voxels within radius.
 	int bruise_sphere(Vector3 center, float radius, int level);
-	// Raise burn level; level 3 also burns hair away.
+	// Raise burn level; level >= 2 also burns hair away (see vxm-format.md).
 	int burn_sphere(Vector3 center, float radius, int level);
 	// Set/clear state bits in a sphere, on solid voxels only.
 	int stamp_state_sphere(Vector3 center, float radius, int set_bits, int clear_bits);
@@ -150,6 +155,9 @@ public:
 
 	// DDA ray cast in voxel space. Returns {hit, voxel: Vector3i, normal: Vector3i,
 	// distance: float (voxel units), material: int, position: Vector3 (voxel units)}.
+	// The origin may lie outside the volume; the ray is clipped to the box and
+	// the entry face becomes the normal. normal is (0,0,0) only when the ray
+	// starts inside a solid voxel.
 	Dictionary raycast(Vector3 origin_vox, Vector3 dir, float max_dist) const;
 
 	// Flood fill (6-connectivity) from `anchor`. Everything NOT connected to the

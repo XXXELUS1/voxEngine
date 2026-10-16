@@ -6,12 +6,16 @@
 ## Команды
 
 ```
-voxgen build <spec.py> [--out godot/assets/models] [--preview build/previews] [--vox build/vox] [--no-check]
+voxgen build <spec.py> [--out godot/assets/models] [--preview build/previews] [--vox build/vox]
+                       [--report build/reports] [--no-check] [--size 256]
     Импортирует спек-модуль, вызывает build() -> Model, пишет <name>.vxm, <name>.vox (+ .vox.json),
-    контактный лист превью <name>.png, отчёт проверок build/reports/<name>.json.
+    контактный лист превью <name>.png (--size — пикселей на вид), отчёт проверок <report>/<name>.json.
     Код возврата 1, если проверки нашли ошибки уровня error.
-voxgen build-all [specs-dir]           все specs/**/*.py, кроме начинающихся с "_"
-voxgen preview <file.vxm> [--out x.png] [--views front,back,left,right,top,bottom,iso,iso2] [--size 256]
+voxgen build-all [specs-dir]           все specs/**/*.py, кроме начинающихся с "_" (те же опции)
+voxgen preview <file.vxm|.vox|spec.py> [--out x.png] [--size 256] [--part NAME]
+               [--views front,back,left,right,top,bottom,iso,iso2,slice_x,slice_y,slice_z]
+    slice_* — срез материалов через центр части (slice_* рисует первую часть модели); один вид
+    пишется как есть, несколько — контактным листом.
 voxgen check <file.vxm>                 печатает отчёт проверок (json) и возвращает 1 при ошибках
 voxgen import-vox <file.vox> --spec-json <file.vox.json> --out <file.vxm>
 voxgen info <file.vxm>                  части, размеры, число вокселей, материалы

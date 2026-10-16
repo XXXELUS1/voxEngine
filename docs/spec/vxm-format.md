@@ -30,12 +30,12 @@ offset  size        содержимое
       "name": "head",
       "bone": "head",
       "voxel_size": 0.005,
-      "origin": [-0.12, -0.10, -0.12],
-      "dims": [48, 48, 48],
+      "origin": [-0.12, -0.04, -0.13],
+      "dims": [48, 56, 52],
       "fields": ["material", "color", "state"]
     }
   ],
-  "meta": {"generator": "voxgen 0.1", "spec": "specs/head_test.py"}
+  "meta": {"generator": "voxgen 0.1.0", "spec": "tools/voxgen/specs/head_test.py", "variant": "default"}
 }
 ```
 

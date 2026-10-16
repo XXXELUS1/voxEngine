@@ -52,10 +52,18 @@ void VoxelVolume::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("raycast", "origin", "dir", "max_dist"), &VoxelVolume::raycast);
 	ClassDB::bind_method(D_METHOD("detach_disconnected", "anchor"), &VoxelVolume::detach_disconnected);
 
+	ClassDB::bind_method(D_METHOD("set_dims", "dims"), &VoxelVolume::set_dims);
+
+	// Storage-only properties so a VoxelVolume survives being saved inside a
+	// .tres/.tscn (dims is registered first: the data setters validate against it).
+	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3I, "dims", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE | PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY), "set_dims", "get_dims");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "voxel_size"), "set_voxel_size", "get_voxel_size");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "origin"), "set_origin", "get_origin");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "part_name"), "set_part_name", "get_part_name");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "bone"), "set_bone", "get_bone");
+	ADD_PROPERTY(PropertyInfo(Variant::PACKED_BYTE_ARRAY, "material_data", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE), "set_material_data", "get_material_data");
+	ADD_PROPERTY(PropertyInfo(Variant::PACKED_BYTE_ARRAY, "color_data", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE), "set_color_data", "get_color_data");
+	ADD_PROPERTY(PropertyInfo(Variant::PACKED_BYTE_ARRAY, "state_data", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE), "set_state_data", "get_state_data");
 
 	BIND_ENUM_CONSTANT(MAT_AIR);
 	BIND_ENUM_CONSTANT(MAT_SKIN);
@@ -109,6 +117,13 @@ void VoxelVolume::create(Vector3i p_dims, float p_voxel_size) {
 	material.fill(0);
 	color.fill(0);
 	state.fill(0);
+}
+
+void VoxelVolume::set_dims(Vector3i p_dims) {
+	if (p_dims == get_dims()) {
+		return;
+	}
+	create(p_dims, voxel_size);
 }
 
 Ref<VoxelVolume> VoxelVolume::duplicate_volume() const {
@@ -491,79 +506,101 @@ int VoxelVolume::trim_hair_capsule(Vector3 a, Vector3 b, float radius, int keep_
 // ---------------------------------------------------------------------------
 
 Dictionary VoxelVolume::raycast(Vector3 o, Vector3 dir, float max_dist) const {
+	// Amanatides-Woo DDA in voxel units. `o` may be outside the volume: the ray
+	// is first clipped to the bounding box and the face it enters through
+	// becomes the normal if the very first voxel is solid. Distances are in
+	// voxel units along the normalised direction.
 	Dictionary r;
 	r["hit"] = false;
-	if (nx == 0 || dir.length_squared() < 1e-12f) {
+	if (get_voxel_count() == 0 || dir.length_squared() < 1e-12f || !(max_dist > 0.0f)) {
 		return r;
 	}
 	dir = dir.normalized();
 
-	// Clip the ray to the volume's bounding box first.
+	// Clip the ray to the volume's bounding box; remember which slab we entered through.
 	float tmin = 0.0f, tmax = max_dist;
-	const float bmin[3] = { 0, 0, 0 };
+	int entry_axis = -1;
 	const float bmax[3] = { (float)nx, (float)ny, (float)nz };
 	for (int i = 0; i < 3; i++) {
 		const float d = dir[i];
 		if (std::fabs(d) < 1e-9f) {
-			if (o[i] < bmin[i] || o[i] > bmax[i]) {
+			if (o[i] < 0.0f || o[i] > bmax[i]) {
 				return r;
 			}
 			continue;
 		}
-		float t0 = (bmin[i] - o[i]) / d;
+		float t0 = (0.0f - o[i]) / d;
 		float t1 = (bmax[i] - o[i]) / d;
 		if (t0 > t1) {
 			std::swap(t0, t1);
 		}
-		tmin = std::max(tmin, t0);
+		if (t0 > tmin) {
+			tmin = t0;
+			entry_axis = i;
+		}
 		tmax = std::min(tmax, t1);
 		if (tmin > tmax) {
 			return r;
 		}
 	}
 
-	Vector3 p = o + dir * (tmin + 1e-4f);
-	int vx = (int)std::floor(p.x), vy = (int)std::floor(p.y), vz = (int)std::floor(p.z);
-	vx = std::clamp(vx, 0, nx - 1);
-	vy = std::clamp(vy, 0, ny - 1);
-	vz = std::clamp(vz, 0, nz - 1);
+	// Start a hair inside the box so floor() picks the entry voxel, not the one before it.
+	const float eps = 1e-4f;
+	const float t_start = tmin + eps;
+	if (t_start > tmax) {
+		return r; // the ray only grazes a corner/edge
+	}
+	const Vector3 p = o + dir * t_start;
+	int vx = std::clamp((int)std::floor(p.x), 0, nx - 1);
+	int vy = std::clamp((int)std::floor(p.y), 0, ny - 1);
+	int vz = std::clamp((int)std::floor(p.z), 0, nz - 1);
 
 	const int stepx = dir.x > 0 ? 1 : -1, stepy = dir.y > 0 ? 1 : -1, stepz = dir.z > 0 ? 1 : -1;
 	const float INF = 1e30f;
 	const float tdx = std::fabs(dir.x) > 1e-9f ? std::fabs(1.0f / dir.x) : INF;
 	const float tdy = std::fabs(dir.y) > 1e-9f ? std::fabs(1.0f / dir.y) : INF;
 	const float tdz = std::fabs(dir.z) > 1e-9f ? std::fabs(1.0f / dir.z) : INF;
-	float tmx = tdx < INF ? ((stepx > 0 ? (vx + 1) - p.x : p.x - vx) * tdx) : INF;
-	float tmy = tdy < INF ? ((stepy > 0 ? (vy + 1) - p.y : p.y - vy) * tdy) : INF;
-	float tmz = tdz < INF ? ((stepz > 0 ? (vz + 1) - p.z : p.z - vz) * tdz) : INF;
+	// Absolute ray parameter of the next crossing of each axis-aligned plane.
+	float tmx = tdx < INF ? t_start + (stepx > 0 ? (vx + 1) - p.x : p.x - vx) * tdx : INF;
+	float tmy = tdy < INF ? t_start + (stepy > 0 ? (vy + 1) - p.y : p.y - vy) * tdy : INF;
+	float tmz = tdz < INF ? t_start + (stepz > 0 ? (vz + 1) - p.z : p.z - vz) * tdz : INF;
 
+	// Distance to the face through which the current voxel was entered.
 	float t = tmin;
 	Vector3i normal(0, 0, 0);
+	if (entry_axis == 0) {
+		normal = Vector3i(-stepx, 0, 0);
+	} else if (entry_axis == 1) {
+		normal = Vector3i(0, -stepy, 0);
+	} else if (entry_axis == 2) {
+		normal = Vector3i(0, 0, -stepz);
+	}
 	const uint8_t *m = material.ptr();
 	int guard = nx + ny + nz + 3;
 	while (guard-- > 0) {
-		if (m[idx(vx, vy, vz)] != 0) {
+		const int i = idx(vx, vy, vz);
+		if (m[i] != 0) {
 			r["hit"] = true;
 			r["voxel"] = Vector3i(vx, vy, vz);
 			r["normal"] = normal;
 			r["distance"] = t;
-			r["material"] = (int)m[idx(vx, vy, vz)];
+			r["material"] = (int)m[i];
 			r["position"] = o + dir * t;
 			return r;
 		}
 		if (tmx < tmy && tmx < tmz) {
 			vx += stepx;
-			t = tmin + tmx;
+			t = tmx;
 			tmx += tdx;
 			normal = Vector3i(-stepx, 0, 0);
 		} else if (tmy < tmz) {
 			vy += stepy;
-			t = tmin + tmy;
+			t = tmy;
 			tmy += tdy;
 			normal = Vector3i(0, -stepy, 0);
 		} else {
 			vz += stepz;
-			t = tmin + tmz;
+			t = tmz;
 			tmz += tdz;
 			normal = Vector3i(0, 0, -stepz);
 		}

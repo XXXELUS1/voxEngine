@@ -1,0 +1,43 @@
+# Line endings: LF in the repository and in every checkout (Godot, bash and scons all want LF,
+# and the owner's Windows clone must not turn scripts into CRLF).
+* text=auto
+
+*.gd          text eol=lf
+*.py          text eol=lf
+*.cpp         text eol=lf
+*.h           text eol=lf
+*.hpp         text eol=lf
+*.md          text eol=lf
+*.tscn        text eol=lf
+*.tres        text eol=lf
+*.gdshader    text eol=lf
+*.gdextension text eol=lf
+*.godot       text eol=lf
+*.cfg         text eol=lf
+*.yml         text eol=lf
+*.yaml        text eol=lf
+*.sh          text eol=lf
+*.json        text eol=lf
+*.toml        text eol=lf
+*.txt         text eol=lf
+Makefile      text eol=lf
+SConstruct    text eol=lf
+.gitignore    text eol=lf
+.gitattributes text eol=lf
+.editorconfig text eol=lf
+*.bat         text eol=crlf
+*.ps1         text eol=crlf
+
+# Binary
+*.png   binary
+*.jpg   binary
+*.vox   binary
+*.vxm   binary
+*.wav   binary
+*.ogg   binary
+*.ttf   binary
+*.so    binary
+*.dll   binary
+*.dylib binary
+*.a     binary
+*.lib   binary

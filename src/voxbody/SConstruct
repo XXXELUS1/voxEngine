@@ -9,6 +9,11 @@ import os
 
 env = SConscript("godot-cpp/SConstruct", {"api_version": "4.7"})
 
+# Per-target object names (src/voxel_part.linux.template_debug.x86_64.os) so that
+# building template_debug after template_release (or vice versa) does not recompile
+# everything. The names still match the *.os / *.obj patterns in .gitignore and `make clean`.
+env["SHOBJSUFFIX"] = env["suffix"] + env["SHOBJSUFFIX"]
+
 env.Append(CPPPATH=["src/"])
 sources = Glob("src/*.cpp")
 

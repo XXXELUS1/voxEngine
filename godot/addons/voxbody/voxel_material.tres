@@ -1,0 +1,15 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3]
+
+[ext_resource type="Shader" path="res://addons/voxbody/voxel.gdshader" id="1_voxel_shader"]
+
+[resource]
+resource_name = "voxel_material"
+shader = ExtResource("1_voxel_shader")
+shader_parameter/voxel_size = 0.005
+shader_parameter/roughness = 0.85
+shader_parameter/blood_roughness = 0.25
+shader_parameter/wet_roughness = 0.3
+shader_parameter/gloss_roughness = 0.35
+shader_parameter/noise_strength = 0.06
+shader_parameter/hue_noise = 0.02
+shader_parameter/ao_light_affect = 0.6

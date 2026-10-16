@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voxgen"
+version = "0.1.0"
+description = "Offline voxel model generator for the voxEngine / Barberians pipeline (SDF specs -> .vxm/.vox + preview renders + checks)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "pillow>=10.1"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+voxgen = "voxgen.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["voxgen*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

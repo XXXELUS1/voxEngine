@@ -1,17 +1,18 @@
 # Godot
 godot/.godot/
-godot/addons/voxbody/bin/*.so
-godot/addons/voxbody/bin/*.dll
-godot/addons/voxbody/bin/*.dylib
-godot/addons/voxbody/bin/*.framework/
+godot/addons/voxbody/bin/*
+!godot/addons/voxbody/bin/.gitkeep
 godot/export/
+*.import.tmp
 
-# C++ build
+# C++ build (src/voxbody; godot-cpp is a submodule and keeps its own outputs out of git)
 src/voxbody/.sconsign.dblite
 src/voxbody/src/*.o
 src/voxbody/src/*.os
 src/voxbody/src/*.obj
+src/voxbody/src/*.pdb
 src/voxbody/*.log
+.scons-cache/
 
 # Python
 __pycache__/
@@ -20,11 +21,15 @@ __pycache__/
 tools/voxgen/build/
 *.egg-info/
 
-# Generated assets (rebuilt from specs by voxgen)
-assets/models/*.vxm
-assets/models/*.vox
-assets/previews/
+# Generated assets (rebuilt from specs by voxgen: make assets)
+godot/assets/models/*.vxm
+godot/assets/models/*.vox
+build/
 
-# Local
+# User screenshots / local stuff
+/screenshot*.png
+/screenshots/
+godot/screenshot*.png
+godot/screenshots/
 .venv/
 *.swp

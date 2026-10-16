@@ -1,0 +1,28 @@
+#!/usr/bin/env python
+# Build script for the voxbody GDExtension.
+# Usage (from this directory):
+#   scons target=template_debug            # editor / debug build
+#   scons target=template_release          # release build
+#   scons platform=windows target=template_release  # cross-compile with mingw
+# Output goes to ../../godot/addons/voxbody/bin/
+import os
+
+env = SConscript("godot-cpp/SConstruct", {"api_version": "4.7"})
+
+env.Append(CPPPATH=["src/"])
+sources = Glob("src/*.cpp")
+
+out_dir = "../../godot/addons/voxbody/bin/"
+lib_name = "libvoxbody{}{}".format(env["suffix"], env["SHLIBSUFFIX"])
+
+if env["platform"] == "macos":
+    library = env.SharedLibrary(
+        out_dir + "libvoxbody.{}.{}.framework/libvoxbody.{}.{}".format(
+            env["platform"], env["target"], env["platform"], env["target"]
+        ),
+        source=sources,
+    )
+else:
+    library = env.SharedLibrary(out_dir + lib_name, source=sources)
+
+Default(library)

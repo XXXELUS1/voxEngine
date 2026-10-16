@@ -1,0 +1,30 @@
+# Godot
+godot/.godot/
+godot/addons/voxbody/bin/*.so
+godot/addons/voxbody/bin/*.dll
+godot/addons/voxbody/bin/*.dylib
+godot/addons/voxbody/bin/*.framework/
+godot/export/
+
+# C++ build
+src/voxbody/.sconsign.dblite
+src/voxbody/src/*.o
+src/voxbody/src/*.os
+src/voxbody/src/*.obj
+src/voxbody/*.log
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+tools/voxgen/build/
+*.egg-info/
+
+# Generated assets (rebuilt from specs by voxgen)
+assets/models/*.vxm
+assets/models/*.vox
+assets/previews/
+
+# Local
+.venv/
+*.swp

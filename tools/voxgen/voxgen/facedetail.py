@@ -21,6 +21,14 @@ Vocabulary (fine voxels, all mirror-symmetric about x = 0; paired features are d
   ears    the form's ears plus a 1 x 2 darker spot on the outer face (the hole);
   cheeks  optional flat ruddy band under the eyes (no noise).
 
+Relief (``FaceDetailParams.relief``): the same features as geometry, one voxel deep, never more
+(a two-voxel step reads as a blob at 3-5 mm): brows protrude one voxel (hair material in the brow
+tone, so a razor can take them off), a skin ridge one row above the lid line overhangs the eye
+(the dark line sits under it), both lip rows protrude one voxel so the mouth line is a recess
+between them, the nostrils are carved two voxels deep. The mask primitives (:func:`protrusion`,
+:func:`recess`) are shared with :mod:`voxgen.head_from_mesh`, which runs its relief on the solid
+before the tissues are layered.
+
 Coordinates: arrays are ``(nz, ny, nx)`` with an even ``nx``; ``X = column - (nx - 1) / 2``
 (half-integers, exact mirror), rows ``y`` are plain indices, the face looks toward -z (index 0
 is the front). Landmarks come from the morphed mesh (hybrid) or the design grid (toonhead).
@@ -68,6 +76,7 @@ class FaceDetailParams:
     lips: bool = True
     ear_spot: bool = True
     cheeks: bool = False
+    relief: bool = False      # features as one-voxel geometry too (brows, lid ridge, lips, nostril holes)
 
 
 def x_coords(nx: int) -> np.ndarray:
@@ -82,7 +91,7 @@ def _cols(X: np.ndarray, x0: float, x1: float) -> np.ndarray:
     return (np.abs(X) >= x0 - 1e-6) & (np.abs(X) <= x1 + 1e-6)
 
 
-def _front_face(solid: np.ndarray) -> np.ndarray:
+def front_face(solid: np.ndarray) -> np.ndarray:
     """Front-most solid voxel of every (y, x) column (looking from -z)."""
     behind = np.cumsum(solid, axis=0) - solid
     return solid & (behind == 0)
@@ -94,6 +103,32 @@ def _rect(shape, cols: np.ndarray, y0: int, y1: int) -> np.ndarray:
     rows = np.zeros(ny, bool)
     rows[max(0, y0):min(ny, y1 + 1)] = True
     return np.broadcast_to(rows[None, :, None] & cols[None, None, :], shape).copy()
+
+
+def protrusion(base: np.ndarray, solid: np.ndarray, dz: int = -1) -> np.ndarray:
+    """Voxels to add so every voxel of ``base`` gets one more in front of it (``dz`` = -1 toward
+    the viewer; +-1 along z only): the shifted copy, where there is air. One voxel, never a stack."""
+    return shift(base, 0, 0, dz) & ~solid
+
+
+def recess(base: np.ndarray, solid: np.ndarray, depth: int = 1, direction: tuple[int, int, int] = (0, 0, 1)) -> np.ndarray:
+    """Voxels to carve: ``base`` and the ``depth - 1`` solid voxels behind each along ``direction``
+    (index steps (dx, dy, dz); the default digs away from the viewer). Stops at air."""
+    out = base & solid
+    cur = out
+    for _ in range(max(0, depth - 1)):
+        cur = shift(cur, *direction) & solid
+        out |= cur
+    return out
+
+
+def hole_walls(inner: np.ndarray, skin: np.ndarray) -> np.ndarray:
+    """Skin voxels 6-adjacent to the inner (deeper) voxels of a carved hole: its floor and side
+    walls, never the rim around the opening on the outer face."""
+    walls = np.zeros(inner.shape, bool)
+    for d in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+        walls |= shift(inner, *d)
+    return walls & skin
 
 
 def apply_face_details(mat: np.ndarray, col: np.ndarray, lm: FaceLandmarks, colors: dict[str, int],
@@ -109,7 +144,7 @@ def apply_face_details(mat: np.ndarray, col: np.ndarray, lm: FaceLandmarks, colo
     stats: dict[str, int] = {}
 
     def skin_front() -> np.ndarray:
-        return _front_face(mat != M.MAT_AIR) & (mat == M.MAT_SKIN)
+        return front_face(mat != M.MAT_AIR) & (mat == M.MAT_SKIN)
 
     # ---- eyes: carve the front skin voxel, put the white one voxel behind (recess follows
     # the local surface, so the eye is always exactly one voxel deep)
@@ -137,6 +172,13 @@ def apply_face_details(mat: np.ndarray, col: np.ndarray, lm: FaceLandmarks, colo
         lid = skin_front() & _rect(mat.shape, white_cols, ey + 2, ey + 2)
         col[lid] = colors["line"]
         stats["lid"] = int(lid.sum())
+    if p.relief:
+        # the upper lid: a skin ridge one row above the lid line, overhanging the eye
+        base = skin_front() & _rect(mat.shape, white_cols, ey + 3, ey + 3)
+        ridge = protrusion(base, mat != M.MAT_AIR)
+        mat[ridge] = M.MAT_SKIN
+        col[ridge] = colors["skin"]
+        stats["lid_ridge"] = int(ridge.sum())
 
     # ---- brows: one row, inner part flat, outer part tilted
     x0 = ex - 3
@@ -146,6 +188,11 @@ def apply_face_details(mat: np.ndarray, col: np.ndarray, lm: FaceLandmarks, colo
     brow &= skin_front()
     col[brow] = colors["brow"]
     stats["brow"] = int(brow.sum())
+    if p.relief:
+        hair = protrusion(brow, mat != M.MAT_AIR)
+        mat[hair] = M.MAT_HAIR
+        col[hair] = colors["brow"]
+        stats["brow_relief"] = int(hair.sum())
 
     # ---- nose: bridge ridge (the two centre columns protrude one voxel) and two nostril dots
     if p.nose_bridge:
@@ -153,7 +200,7 @@ def apply_face_details(mat: np.ndarray, col: np.ndarray, lm: FaceLandmarks, colo
         # centre columns already protrude more than one voxel beyond the root (the form's own
         # nose tip) get no extra voxel, so the tip never grows into a bar
         ridge_cols = _cols(X, 0, 0.5)
-        front = _front_face(mat != M.MAT_AIR)
+        front = front_face(mat != M.MAT_AIR)
         zrow = np.where(front[:, :, ridge_cols].any(axis=2), np.arange(nz)[:, None], nz).min(axis=0)  # (ny,)
         z_root = int(zrow[min(ny - 1, lm.nose_top_y + 1)])
         flat_rows = np.zeros(ny, bool)
@@ -167,6 +214,12 @@ def apply_face_details(mat: np.ndarray, col: np.ndarray, lm: FaceLandmarks, colo
     if p.nostrils:
         nx_ = float(lm.nostril_x)
         nostril = skin_front() & _rect(mat.shape, _cols(X, nx_, nx_), lm.nose_base_y, lm.nose_base_y)
+        if p.relief:
+            # two voxels deep into the nose; the hole's floor and walls take the dark tone
+            hole = recess(nostril, mat != M.MAT_AIR, depth=2)
+            mat[hole] = M.MAT_AIR
+            col[hole] = 0
+            nostril = hole_walls(hole & ~nostril, mat == M.MAT_SKIN)
         col[nostril] = colors["line"]
         stats["nostril"] = int(nostril.sum())
 
@@ -183,6 +236,12 @@ def apply_face_details(mat: np.ndarray, col: np.ndarray, lm: FaceLandmarks, colo
         lips = (upper | lower) & skin_front() & (col != colors["line"])
         col[lips] = colors["lips"]
         stats["lips"] = int(lips.sum())
+        if p.relief:
+            # both lip rows come forward one voxel; the mouth line stays as a recess between them
+            out = protrusion(lips, mat != M.MAT_AIR)
+            mat[out] = M.MAT_SKIN
+            col[out] = colors["lips"]
+            stats["lips_relief"] = int(out.sum())
 
     # ---- ears: a 1 x 2 darker spot on the outer (side) face at the ear hole
     if p.ear_spot:

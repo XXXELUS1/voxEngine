@@ -113,3 +113,22 @@ def test_facedetail_on_a_slab():
     assert st["cheek"] == 16 and st["ear"] == 4                             # 1 x 2 spot on each side face of the slab
     with pytest.raises(ValueError):
         apply_face_details(np.zeros((4, 4, 5), np.uint8), np.zeros((4, 4, 5), np.uint8), lm, COLORS)
+
+
+def test_facedetail_relief_on_a_slab():
+    mat, col = flat_face()
+    lm = FaceLandmarks(eye_x=5.5, eye_y=20, brow_y=24, nose_top_y=19, nose_base_y=13, nostril_x=1.5,
+                       mouth_y=8, mouth_half_w=5.5, ear_y=15, ear_z=8, cheek_y=13)
+    st = apply_face_details(mat, col, lm, COLORS, FaceDetailParams(relief=True))
+    assert np.array_equal(mat, mat[:, :, ::-1])
+    # every relief step is exactly one voxel: new voxels only at z = 3 (in front of the slab face at z = 4)
+    assert not (mat[:3] != MAT_AIR).any()
+    assert st["brow_relief"] == st["brow"] == 16 and ((mat[3] == MAT_HAIR) & (col[3] == 6)).sum() == 16
+    assert st["lid_ridge"] == 10 and ((mat[3, 23] == MAT_SKIN) & (col[3, 23] == 1)).sum() == 10   # row above the lid line
+    assert (col[4, 22] == 5).sum() == 10                                                      # the lid line stays
+    assert st["lips_relief"] == st["lips"] == 18 and (col[3, 9] == 4).sum() == 8 and (col[3, 7] == 4).sum() == 10
+    assert (mat[3, 8] == MAT_AIR).all()                                                       # the mouth line is the recess
+    # nostrils: two voxels deep, the hole's floor and walls dark, the rim around it untouched
+    assert st["nostril"] >= 6 and (mat[4, 13] == MAT_AIR).sum() == 2 and (mat[5, 13] == MAT_AIR).sum() == 2
+    hole_x = np.nonzero(mat[5, 13] == MAT_AIR)[0]
+    assert (col[6, 13, hole_x] == 5).all() and (col[4, 13, hole_x - 1] == 1).all() and (col[4, 13, hole_x + 1] == 1).all()

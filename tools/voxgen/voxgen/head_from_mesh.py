@@ -23,6 +23,19 @@ times coarser and upsampled (chunky, deliberate steps) with the details carved o
 grid; flat tints (no per-voxel noise: a disciplined palette of 3 skin tones, 3 hair tones,
 eye white/iris/highlight, lip and one dark line colour), bigger simpler eyes (n x n iris block,
 one highlight, a dark upper-lid line), bold brows, a thin lip band with a mouth line, no blush.
+Relief (``HeadParams.relief``, meant for 3 mm): the features as geometry, every step exactly one
+voxel (a 2-voxel step at 3 mm reads as a blob): the eye opening loses its top row, which becomes
+the dark lid line, and the row above it protrudes one voxel as the upper lid (skin); both lip rows
+protrude one voxel so the mouth line is a recess between them, with the corner voxels one row up;
+the nostrils are two-voxel slots carved two voxels back into the bottom-front edge of the nose
+(open to the front and below) and lined dark inside, not around; the ear's silhouette edge (helix) comes one voxel further
+out; the brows protrude one voxel as hair material in the brow tone (a razor can take them off).
+Lid, lips, nostrils and ear rim are applied to the form *before* the tissues are layered, so the
+added voxels are skin and the holes get a skin lining by depth.
+``HeadParams.mid(strength)`` is the "middle" caricature the owner asked for between the realistic
+mesh (features by colour only) and the old SDF head (features as lumps): the stylized 3 mm head
+with relief and ``MID_MORPHS`` (brow ridge, bigger nose, fuller lips, stronger jaw and cheekbones,
+bigger ears, hooded lids) scaled by ``strength``.
 
 Local space of the part: metres, Y up, face toward -Z, chin at y ~ 0, centred on x/z.
 The hair helper of MakeHuman is a hull around the whole head and face, so the hairline
@@ -41,6 +54,7 @@ from . import materials as M
 from . import meshvox, mh
 from .body import dilate, erode, exposed, neighbour_count, shift
 from .checks import label_components
+from .facedetail import front_face, hole_walls, protrusion, recess
 from .model import Model, Part
 from .palette import Palette
 
@@ -93,6 +107,7 @@ class HeadParams:
     lid_line: bool = False               # one dark voxel row along the upper lid
     iris_voxels: int = 0                 # 0 = disc of iris_radius; n = n x n block with one highlight voxel
     eye_open_w: float = 0.85             # half-width of the forced lid opening as a fraction of the eyeball radius
+    relief: bool = False                 # features as one-voxel geometry: lid ridge, lips, nostril holes, brows
 
     @classmethod
     def stylized(cls, **overrides) -> "HeadParams":
@@ -102,6 +117,46 @@ class HeadParams:
                     lid_line=True, iris_voxels=3, eye_open=0.0065, eye_open_w=0.95, nostril_radius=0.0032)
         base.update(overrides)
         return cls(**base)
+
+    @classmethod
+    def mid(cls, strength: float = 1.0, **overrides) -> "HeadParams":
+        """The stylized 3 mm head with relief and the ``MID_MORPHS`` caricature scaled by
+        ``strength`` (soft ~0.65, medium ~1.2, strong ~1.9); stubble off. ``morphs`` in
+        ``overrides`` are added on top (``{"nose-scale-vert": 0.3}``), other fields override."""
+        morphs = {k: round(w * strength, 3) for k, w in MID_MORPHS.items()}
+        for k, w in overrides.pop("morphs", {}).items():
+            morphs[k] = round(morphs.get(k, 0.0) + float(w), 3)
+        base = dict(relief=True, stubble=False, morphs=morphs,
+                    lip_half_height=0.0035 if strength < 1.5 else 0.0068)   # 3 lip rows, 5 when strong
+        base.update(overrides)
+        return cls.stylized(**base)
+
+
+# the "middle" caricature at strength 1: MakeHuman modifier weights (voxgen.mh_targets), l-/r- pairs
+# expanded. Brow ridge forward, bigger deeper nose, fuller lips, stronger chin and jaw, cheekbones,
+# bigger ears, hooded lids and a hint of eye bags; nothing that sinks the eyes.
+MID_MORPHS = {
+    "eyebrows-trans-forward": 0.5,
+    "forehead-trans-forward": 0.2,
+    "nose-scale-vert": 0.9,
+    "nose-scale-depth": 1.0,
+    "nose-scale-horiz": 0.4,
+    "nose-point-width": 0.7,
+    "nose-nostrils-width": 0.6,
+    "mouth-upperlip-height": 0.8,
+    "mouth-lowerlip-height": 0.8,
+    "mouth-scale-depth": 0.8,
+    "mouth-cupidsbow-width": 0.6,
+    "mouth-upperlip-volume": 0.6,
+    "mouth-lowerlip-volume": 0.6,
+    "chin-prominent": 0.8,
+    "chin-width": 0.7,
+    "chin-jaw-drop": 0.3,
+    "cheek-bones": 0.8,
+    "ear-scale": 0.6,
+    "eye-eyefold-down": 0.6,
+    "eye-bag-incr": 0.3,
+}
 
 
 # colour names the builder asks for -> palette entries of the stylized (flat) palette
@@ -323,7 +378,8 @@ def smooth_cap(hair: np.ndarray, solid: np.ndarray, passes: int = 2) -> np.ndarr
 def pick_front_row(cand: np.ndarray, Z: np.ndarray, rows: int = 1) -> np.ndarray:
     """Per x column, take the row of the frontmost (smallest z) candidate voxel, smooth
     that row over neighbouring columns (median of 3) so the line does not stair-step,
-    then keep the frontmost candidate in that row and the ``rows - 1`` rows above it."""
+    then keep the frontmost candidate in that row and the ``rows - 1`` rows above it (below
+    it where the band has nothing above, e.g. a brow sitting on the top of its band)."""
     out = np.zeros(cand.shape, bool)
     zs, ys, xs = np.nonzero(cand)
     cols = np.unique(xs)
@@ -344,6 +400,8 @@ def pick_front_row(cand: np.ndarray, Z: np.ndarray, rows: int = 1) -> np.ndarray
         for r in range(rows):
             # nearest candidate row to the smoothed target, frontmost voxel in it
             dy = np.abs(yy - (y_target + r))
+            if r and dy.min() > 1:
+                dy = np.abs(yy - (y_target - r))
             best = dy.min()
             if best > 1:
                 continue
@@ -354,12 +412,15 @@ def pick_front_row(cand: np.ndarray, Z: np.ndarray, rows: int = 1) -> np.ndarray
 
 
 def lid_opening(solid: np.ndarray, eyeball: np.ndarray, X, Y, Z, centre, half_w: float, half_h: float,
-                reach: int = 2) -> np.ndarray:
+                reach: int = 2, top_cut: float = 0.0) -> np.ndarray:
     """Voxels to turn into eye so the eyeball shows through a small lid opening: inside
     the x/y ellipse (``half_w``, ``half_h``) around the eye centre, in every column where
     the eyeball lies at most ``reach`` voxels behind the front surface, the surface voxel
-    and everything down to the eyeball become eye. Outside the ellipse the mesh lids stay."""
+    and everything down to the eyeball become eye. Outside the ellipse the mesh lids stay.
+    ``top_cut`` flattens the top: rows above ``centre_y + half_h - top_cut`` stay closed."""
     foot = (((X[0] - centre[0]) / half_w) ** 2 + ((Y[0] - centre[1]) / half_h) ** 2) <= 1.0  # (ny, nx)
+    if top_cut > 0:
+        foot &= Y[0] <= centre[1] + half_h - top_cut
     front = Z < centre[2]
     s = solid & front
     e = eyeball & front
@@ -433,6 +494,97 @@ def keep_largest_component(part: Part) -> int:
     return cnt
 
 
+def lip_band(Y: np.ndarray, mouth_y: float, half_height: float, vs: float) -> np.ndarray:
+    """Rows of the lip band: ``half_height`` below the mouth line, one voxel less above it once
+    the band is more than one row per lip (the lower lip is the fuller one), the line row included."""
+    d = Y - mouth_y
+    above = max(half_height - vs, vs * 1.5)
+    return ((d < 0) & (-d <= half_height)) | ((d >= 0) & (d <= above))
+
+
+def lid_line_rows(eye: np.ndarray, surf: np.ndarray, X, Z, centres) -> np.ndarray:
+    """One smooth row of surface voxels right above each eye opening (the surface recedes under
+    the brow, so the row is looked for a few voxels back and forth in z)."""
+    out = np.zeros(eye.shape, bool)
+    exposed_eye = eye & exposed(surf | eye)
+    for ec in centres:
+        front = exposed_eye & (Z < ec[2]) & (np.abs(X - ec[0]) < 0.02)   # this eye's opening
+        top = front & ~shift(eye, 0, -1, 0)
+        above = np.zeros(top.shape, bool)
+        for dz in range(-3, 4):
+            above |= shift(top, 0, 1, dz)
+        out |= pick_front_row(surf & above, Z, 1)
+    return out
+
+
+def relief_pass(solid: np.ndarray, eye: np.ndarray, lid_line: np.ndarray, X, Y, Z, lm: dict, p: HeadParams,
+                vs: float) -> tuple[np.ndarray, dict]:
+    """Feature relief on the form before the tissues are layered: the upper-lid ridge (the row
+    above the lid line comes one voxel forward), both lip rows one voxel forward (the mouth line
+    stays as a recess), the nostrils carved two voxels deep. Returns the new solid and the masks
+    (``ridge``, ``lips``, ``nostril_inner`` = the deeper hole voxels, whose walls get the dark tone,
+    ``ear_rim`` = the helix, one voxel further out along the ear's silhouette)."""
+    solid = solid.copy()
+    surf = exposed(solid) & ~eye
+    masks: dict[str, np.ndarray] = {}
+    # upper lid: the surface row above the lid line, over the same columns
+    above = np.zeros(solid.shape, bool)
+    for dz in range(-3, 4):
+        above |= shift(lid_line, 0, 1, dz)
+    ridge = protrusion(pick_front_row(surf & above, Z, 1), solid)
+    solid |= ridge
+    masks["ridge"] = ridge
+    # lips: the front voxel of every column in the lip rows (not the mouth row) comes forward
+    mouth_y = float(lm["mouth"][1])
+    band = surf & front_face(solid) & lip_band(Y, mouth_y, p.lip_half_height, vs) & (np.abs(Y - mouth_y) > vs * 0.5) \
+        & (np.abs(X) <= lm["mouth_half_width"] - 0.004)
+    lips = np.zeros(solid.shape, bool)
+    if band.any():
+        band &= Z <= Z[band].min() + 0.016
+        lips = protrusion(band, solid)
+        solid |= lips
+    masks["lips"] = lips
+    # nostrils: on the bottom-front edge of the nose (nose voxels with air below *and* in front,
+    # between the mouth and the eyes), the one at |x| = 9 mm nearest to 8 mm under and 6 mm behind
+    # the tip, plus its neighbour toward the centre (a 6 mm slot), carved two voxels back into the
+    # nose: a notch open to the front and the underside, so it reads from the front as the nostril
+    inner = np.zeros(solid.shape, bool)
+    tip = lm["nose_tip"]
+    nose = solid & (Y > lm["mouth"][1] + 0.006) & (Y < lm["eye_y"] - 0.012) & (np.abs(X) < 0.02) & (Z < tip[2] + 0.03)
+    edge = nose & ~shift(solid, 0, 1, 0) & ~shift(solid, 0, 0, 1)
+    for sx in (-1, 1):
+        idx = nearest_voxel(edge, X, Y, Z, (sx * 0.009, tip[1] - 0.008, tip[2] + 0.006))
+        if idx is None:
+            continue
+        z0, y0, x0 = (int(v) for v in idx)
+        base = np.zeros(solid.shape, bool)
+        base[z0, y0, x0] = True
+        zs = np.nonzero(edge[:, y0, x0 - sx])[0]        # the edge voxel of the next column in (its own z)
+        if zs.size:
+            base[int(zs.min()), y0, x0 - sx] = True
+        hole = recess(base, solid, depth=2, direction=(0, 0, 1))
+        solid &= ~hole
+        inner |= hole & ~base
+    masks["nostril_inner"] = inner
+    # ear rim: the ear's silhouette edge seen from the side (outer-face ear voxels next to a
+    # column that drops two or more voxels toward the head) comes one voxel further out: the helix
+    ear_z0, ear_z1 = lm["ear_z"]
+    box = (np.abs(X) > lm["ear_inner_x"]) & (Y > lm["ear_y"][0]) & (Y < lm["ear_y"][1]) & (Z > ear_z0) & (Z < ear_z1)
+    rim = np.zeros(solid.shape, bool)
+    for sx in (-1, 1):
+        side = solid & box & ((X > 0) if sx > 0 else (X < 0))
+        ax = np.where(side, np.abs(X), -np.inf).max(axis=2)                  # outer |x| per (z, y), (nz, ny)
+        drop = np.zeros(ax.shape, bool)
+        for dz, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nb = np.roll(np.roll(ax, dz, axis=0), dy, axis=1)
+            drop |= np.isfinite(ax) & (nb < ax - 1.5 * vs)
+        edge = side & (np.abs(np.abs(X) - ax[:, :, None]) < vs * 0.5) & drop[:, :, None]
+        rim |= shift(edge, sx, 0, 0) & ~solid
+    solid |= rim
+    masks["ear_rim"] = rim
+    return solid, masks
+
+
 # ---------------------------------------------------------------------------
 # the builder
 # ---------------------------------------------------------------------------
@@ -478,6 +630,24 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
     body_surf = meshvox.voxelize_surface(body_c, grid)       # the fine skin shell (eye masking only)
     solid, info = form_solid(grid, body_c, eyes, mult, p.clean_surface)
     model.meta["fill"] = info
+
+    # ---- eye mask: eyeball voxels keep the mesh lids; a small forced opening guarantees
+    # visibility (with relief the opening loses its top row: that row becomes the lid line)
+    eye_solid = np.zeros(grid.shape, bool)
+    for e in eyes:
+        s, _ = meshvox.fill_interior(meshvox.voxelize_surface(e, grid))
+        eye_solid |= s
+    eye = eye_solid & ~body_surf & solid
+    eye_centres = (lm["eye_l"], lm["eye_r"])
+    if p.eye_open > 0:
+        for ec in eye_centres:
+            eye |= lid_opening(solid, eye_solid, X, Y, Z, ec, lm["eye_radius"] * p.eye_open_w, p.eye_open,
+                               reach=3 if p.iris_voxels else 2, top_cut=vs if p.relief else 0.0)
+    lid_line = lid_line_rows(eye, exposed(solid) & ~eye, X, Z, eye_centres) if p.lid_line else np.zeros(grid.shape, bool)
+    relief_masks: dict[str, np.ndarray] = {}
+    if p.relief:
+        solid, relief_masks = relief_pass(solid, eye, lid_line, X, Y, Z, lm, p, vs)
+        model.meta["relief"] = {k: int(v.sum()) for k, v in relief_masks.items()}
 
     # ---- tissues by depth
     depth = depth_map(solid)
@@ -533,16 +703,7 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
     tz, ty, tx = np.nonzero(teeth)
     col[tz, ty, tx] = np.where(tx % 2 == 0, C("tooth"), C("tooth_dark")).astype(np.uint8)
 
-    # ---- eyes: eyeball voxels keep the mesh lids; a small forced opening guarantees visibility
-    eye_solid = np.zeros(grid.shape, bool)
-    for e in eyes:
-        s, _ = meshvox.fill_interior(meshvox.voxelize_surface(e, grid))
-        eye_solid |= s
-    eye = eye_solid & ~body_surf & solid
-    if p.eye_open > 0:
-        for ec in (lm["eye_l"], lm["eye_r"]):
-            eye |= lid_opening(mat != M.MAT_AIR, eye_solid, X, Y, Z, ec, lm["eye_radius"] * p.eye_open_w, p.eye_open,
-                               reach=3 if p.iris_voxels else 2)
+    # ---- eyes
     mat[eye] = M.MAT_EYE
     col[eye] = C("eye_white")
     exposed_all = exposed(mat != M.MAT_AIR)
@@ -562,14 +723,7 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
         col[iris] = C("iris")
         if hl is not None:
             col[hl] = C("highlight")
-        if p.lid_line:
-            # the exposed skin row right above the opening (the surface recedes under the
-            # brow, so look a few voxels back and forth in z), one smooth row per column
-            top = front & ~shift(eye, 0, -1, 0)
-            above = np.zeros(top.shape, bool)
-            for dz in range(-3, 4):
-                above |= shift(top, 0, 1, dz)
-            col[pick_front_row(skin_ex & above, Z, 1)] = C("lid_line")
+    col[lid_line & skin_ex] = C("lid_line")
 
     # ---- skin tints (colour only) on the exposed skin, before the hair hides the scalp
     mouth_y = float(lm["mouth"][1])
@@ -586,12 +740,27 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
             under = skin_ex & ~brow & (shift(inner, 0, -1, 0) | shift(inner, 0, -1, 1) | shift(inner, 0, -1, 2))
             brow |= pick_front_row(under, Z, 1)
             col[brow] = C("brow")
+            if p.relief:
+                # the brow as geometry: one voxel of hair material in front of every brow voxel
+                tuft = protrusion(brow, mat != M.MAT_AIR)
+                mat[tuft] = M.MAT_HAIR
+                col[tuft] = C("brow")
     if p.lips:
-        lips = skin_ex & (np.abs(Y - mouth_y) <= p.lip_half_height) & (np.abs(X) <= lm["mouth_half_width"] - 0.004)
+        lips = skin_ex & lip_band(Y, mouth_y, p.lip_half_height, vs) & (np.abs(X) <= lm["mouth_half_width"] - 0.004)
         if lips.any():
             lips &= Z <= Z[lips].min() + 0.016
             col[lips] = C("lips")
-            col[lips & (np.abs(Y - mouth_y) <= vs * 0.5)] = C("lip_line")   # the row between the lips
+            line = lips & (np.abs(Y - mouth_y) <= vs * 0.5)                  # the row between the lips
+            col[line] = C("lip_line")
+            if p.relief and line.any():
+                # mouth corners: the outermost line voxel on each side moves one row up
+                ax = np.abs(X[line])
+                ends = line & (np.abs(X) >= ax.max() - 1e-6)
+                col[ends] = C("lips")
+                up = np.zeros(line.shape, bool)
+                for dz in range(-2, 3):
+                    up |= shift(ends, 0, 1, dz)
+                col[pick_front_row(skin_ex & up, Z, 1)] = C("lip_line")
     if p.blush:
         # smooth radial falloff on the cheekbone (two bands) and a faint nose tip
         cx, cy, cz = lm["eye_x"] + 0.016, lm["eye_y"] - 0.028, lm["nose_tip"][2] + 0.045
@@ -628,7 +797,9 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
             r = hash01(np.abs(ixx - grid.dims[0] / 2 + 0.5).astype(np.int64), iy, iz, p.seed)
             shade = np.where(r < 0.3, C("stubble_light"), np.where(r < 0.6, C("stubble_dark"), C("stubble"))).astype(np.uint8)
             col[zone] = shade[zone]
-    if p.nostrils:
+    if p.nostrils and p.relief:
+        col[hole_walls(relief_masks["nostril_inner"], mat == M.MAT_SKIN)] = C("nostril")
+    elif p.nostrils:
         for sx in (-1, 1):
             target = (sx * 0.009, lm["nose_base_y"], lm["nose_tip"][2] + 0.012)
             idx = nearest_voxel(skin_ex, X, Y, Z, target)

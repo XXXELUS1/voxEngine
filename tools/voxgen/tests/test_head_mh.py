@@ -7,7 +7,7 @@ from voxgen import checks, meshvox, mh
 from voxgen.body import dilate, exposed
 from voxgen import mh_targets
 from voxgen.body import exposed as exposed_mask
-from voxgen.head_from_mesh import HeadParams, build_head
+from voxgen.head_from_mesh import MID_MORPHS, HeadParams, build_head, make_palette
 from voxgen.hybridhead import DEFAULT_MORPHS, HybridHeadParams, build_hybrid_head, quantize_form
 from voxgen.materials import MAT_AIR, MAT_BONE, MAT_EYE, MAT_HAIR, MAT_SKIN, MAT_TOOTH
 from voxgen.objmesh import ObjMesh
@@ -77,6 +77,64 @@ def test_head_mh_eyes_visible_and_symmetric(head):
     assert (eye & exposed(part.material != MAT_AIR)).sum() >= 4
     mat = part.material
     assert np.array_equal(mat, mat[:, :, ::-1])
+
+
+# ---------------------------------------------------------------------------- mid caricature + relief
+
+@pytest.fixture(scope="module")
+def mid():
+    return build_head(0.003, HeadParams.mid(1.2), name="t_mid")
+
+
+def test_mid_targets_are_bundled():
+    for rel, _w in mh_targets.files_for(MID_MORPHS):
+        assert mh_targets.target_path(rel, download=False).is_file(), rel
+
+
+def test_mid_params():
+    p = HeadParams.mid(1.9, morphs={"nose-scale-vert": 0.3}, stubble=True)
+    assert p.relief and p.flat_tints and p.clean_surface and p.stubble
+    assert p.morphs["nose-scale-vert"] == pytest.approx(MID_MORPHS["nose-scale-vert"] * 1.9 + 0.3, abs=1e-3)
+    assert p.lip_half_height > HeadParams.mid(0.65).lip_half_height           # strong: five lip rows
+    assert not HeadParams.mid(0.65).stubble and HeadParams.stylized().stubble  # mid presets: stubble off
+
+
+def test_mid_relief_is_one_voxel_geometry(mid):
+    part = mid.part("head")
+    mat, col = part.material, part.color
+    pal = make_palette(True)
+    assert np.array_equal(mat, mat[:, :, ::-1])
+    report = checks.run(mid)
+    assert report["errors"] == [] and report["warnings"] == [], report
+    r = mid.meta["relief"]
+    assert r["ridge"] >= 12 and r["lips"] >= 24 and r["nostril_inner"] == 4   # two 2-voxel slots, 2 deep
+    solid = mat != MAT_AIR
+    nz, ny, nx = mat.shape
+    xc = nx // 2
+    front_z = lambda y: int(np.argmax(solid[:, y, xc]))
+    front_col = lambda y: int(col[front_z(y), y, xc])
+    # the mouth line is a one-voxel recess between the two protruding lip rows (centre column)
+    rows = [y for y in range(ny // 2) if solid[:, y, xc].any() and front_col(y) == pal.index("line")]
+    assert len(rows) == 1, rows
+    my = rows[0]
+    assert front_col(my + 1) == pal.index("lips") and front_col(my - 1) == pal.index("lips")
+    assert front_z(my + 1) == front_z(my) - 1 and front_z(my - 1) == front_z(my) - 1
+    # the brows protrude as hair voxels in the brow tone, sitting on skin, above the eyes
+    eye = mat == MAT_EYE
+    eye_top = int(np.nonzero(eye)[1].max())
+    brow = (mat == MAT_HAIR) & (col == pal.index("hair_deep"))
+    brow &= (np.arange(ny)[None, :, None] > eye_top) & (np.arange(ny)[None, :, None] <= eye_top + 8)
+    brow &= (np.arange(nz)[:, None, None] < nz // 2) & (np.abs(np.arange(nx) - xc)[None, None, :] <= 20)  # the face, not the sideburns
+    assert brow.sum() >= 20
+    assert (dilate(brow) & (mat == MAT_SKIN)).sum() >= brow.sum() // 2
+    # the eye opening has a flat top under the dark lid line: the top eye row is as wide as the one below
+    zs, ys, xs = np.nonzero(eye & exposed(solid))
+    top, below = xs[ys == ys.max()], xs[ys == ys.max() - 1]
+    assert top.size >= 0.7 * below.size
+    # nostril slots: air pockets open to the front, walls in the dark tone next to them
+    hole_walls = (col == pal.index("line")) & (mat == MAT_SKIN) & (np.arange(ny)[None, :, None] < my + 12) \
+        & (np.arange(ny)[None, :, None] > my + 2)
+    assert hole_walls.sum() >= 4
 
 
 # ---------------------------------------------------------------------------- hybrid head

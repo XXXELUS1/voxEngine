@@ -371,16 +371,17 @@ def setup_render(engine, size, samples, out_path, freestyle=False):
 
 
 # ----------------------------------------------------------------------------- main
-def build_geometry(model, style: str, cubic_materials=()):
+def build_geometry(model, style: str, cubic_materials=(), jitter: float = 0.06):
     """One mesh object per part (each at its own origin). Returns (objects, bbox_min, bbox_max, faces).
-    ``cubic_materials``: material ids rendered as cubes inside the smooth styles."""
+    ``cubic_materials``: material ids rendered as cubes inside the smooth styles; ``jitter``: the
+    per-voxel colour jitter of the cube mesher (0 = flat palette colours, the stylized look)."""
     objs, faces = [], 0
     lo, hi = None, None
     for part in model.parts:
         if style in SMOOTH_STYLES:
             m = mesh.surface_nets(part, model.palette, smooth_passes=2, keep_cubic_materials=tuple(cubic_materials))
         else:
-            m = mesh.culled_quads(part, model.palette, jitter=0.06, ao=True)
+            m = mesh.culled_quads(part, model.palette, jitter=jitter, ao=True)
         if m.n_faces == 0:
             continue
         ob = make_mesh_object(part.name or "part", m)
@@ -429,14 +430,14 @@ def assign_materials(objs, style: str, voxel_size: float):
 
 
 def render_one(model_path, style, light, view, size, samples, out, bg="dark", engine=None, save_blend=None,
-               index=None, cubic_materials=()) -> dict:
+               index=None, cubic_materials=(), jitter: float = 0.06) -> dict:
     model = io_vxm.read(model_path)
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
     scene.unit_settings.system = "METRIC"
 
     t0 = time.time()
-    objs, bmin, bmax, faces = build_geometry(model, style, cubic_materials)
+    objs, bmin, bmax, faces = build_geometry(model, style, cubic_materials, jitter)
     size_m = bmax - bmin
     center = (bmin + bmax) / 2
     assign_materials(objs, style, model.parts[0].voxel_size)
@@ -475,7 +476,7 @@ def render_one(model_path, style, light, view, size, samples, out, bg="dark", en
         "model": model.name, "parts": [p.name for p in model.parts],
         "dims": "x".join(str(v) for v in (p0.nx, p0.ny, p0.nz)) + ("+" if len(model.parts) > 1 else ""),
         "voxel_mm": round(p0.voxel_size * 1000, 2), "blender": bpy.app.version_string, "out": out,
-        "cubic_materials": [int(v) for v in cubic_materials],
+        "cubic_materials": [int(v) for v in cubic_materials], "jitter": jitter,
     }
     if index is not None:
         info["index"] = index
@@ -499,11 +500,12 @@ def main(argv=None) -> int:
     ap.add_argument("--index", type=int, default=None, help="tile order in the contact sheet")
     ap.add_argument("--cubic-materials", default="",
                     help="comma list of material ids kept as cubes in smooth/clay/toon (e.g. 5,8 = tooth, hair)")
+    ap.add_argument("--jitter", type=float, default=0.06, help="per-voxel colour jitter of the cube mesher (0 = none)")
     args = ap.parse_args(argv)
     cubic = [int(v) for v in args.cubic_materials.split(",") if v.strip()]
     info = render_one(args.model, args.style, args.light, args.view, args.size, args.samples, args.out,
                       bg=args.bg, engine=args.engine, save_blend=args.save_blend, index=args.index,
-                      cubic_materials=cubic)
+                      cubic_materials=cubic, jitter=args.jitter)
     print("RENDER_INFO " + json.dumps(info), flush=True)
     return 0
 

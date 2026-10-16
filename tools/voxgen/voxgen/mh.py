@@ -48,9 +48,11 @@ def to_godot(mesh: ObjMesh, ground_y_dm: float) -> ObjMesh:
 
 @dataclass
 class MakeHuman:
-    """The converted mesh plus cached sub-meshes and landmarks."""
+    """The converted mesh plus cached sub-meshes and landmarks (``morphs``: the MakeHuman
+    modifier weights it was built with, see :mod:`voxgen.mh_targets`)."""
 
     mesh: ObjMesh
+    morphs: dict = field(default_factory=dict)
     _cache: dict = field(default_factory=dict, repr=False)
 
     # -- sub-meshes ------------------------------------------------------------
@@ -129,16 +131,32 @@ class MakeHuman:
 
 
 @lru_cache(maxsize=4)
-def _load_cached(path: str) -> MakeHuman:
-    raw = load_obj(path)
+def _load_raw(path: str) -> ObjMesh:
+    """base.obj as stored (decimetres, facing +Z): the frame the morph targets live in."""
+    return load_obj(path)
+
+
+def _convert(raw: ObjMesh, morphs: dict | None = None) -> MakeHuman:
     ground = raw.group_centre("joint-ground")[1]
-    return MakeHuman(to_godot(raw, ground))
+    return MakeHuman(to_godot(raw, ground), dict(morphs or {}))
 
 
-def load(path=ASSET) -> MakeHuman:
-    """The converted base mesh (cached per path). Raises FileNotFoundError when the
-    asset is missing; nothing is downloaded."""
+@lru_cache(maxsize=4)
+def _load_cached(path: str) -> MakeHuman:
+    return _convert(_load_raw(path))
+
+
+def load(path=ASSET, morphs: dict | None = None) -> MakeHuman:
+    """The converted base mesh (cached per path), optionally morphed: ``morphs`` is
+    {MakeHuman modifier: weight} (:func:`voxgen.mh_targets.apply_morphs`, applied in the
+    file's decimetre frame before the conversion, so joints and helpers move along and
+    every landmark comes from the morphed mesh). Raises FileNotFoundError when the base
+    mesh is missing; the base mesh is never downloaded (targets are, into the cache)."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"MakeHuman base mesh not found: {path} (source: {SOURCE_URL})")
-    return _load_cached(str(path.resolve()))
+    if not morphs:
+        return _load_cached(str(path.resolve()))
+    from . import mh_targets
+    raw = _load_raw(str(path.resolve()))
+    return _convert(raw.transformed(lambda v: mh_targets.apply_morphs(v, morphs)), morphs)

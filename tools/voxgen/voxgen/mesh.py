@@ -10,6 +10,18 @@ Pure numpy, importable without Blender. Two builders, both returning a :class:`M
   a "cavity" AO. Materials in ``keep_cubic_materials`` (empty by default, so hair and teeth are
   part of the smooth surface; ``CUBIC_MATERIALS`` = teeth + hair restores the cubic look) are
   excluded from the smooth surface and appended as culled cubes (culled against the full occupancy).
+* :func:`step_edge_weights` - per-edge chamfer weights for the "facet" look (cubes whose one-voxel
+  steps become exact 45 degree slopes while big flat faces stay crisp). Rule, to be ported to C++
+  as is: for every mesh edge shared by exactly two quads with different normals (a convex or
+  concave 90 degree edge) take each quad's *extent* away from the edge: the number of consecutive
+  voxels, starting at the quad's own voxel inclusive, whose face with the same normal is exposed
+  (the flat face continues). The edge is a *step* when either extent == 1 (the tread or the riser
+  next to it is one voxel deep). Then group the step edges into *runs*: consecutive unit edges on
+  the same straight line, between faces of the same two normals; a step edge is kept only when its
+  run is at least ``min_run`` voxels long (default 2), so a lone one-voxel bump or pit stays a cube
+  instead of becoming a diamond "pimple" (``min_run=1`` = every step). Kept edges get weight 1,
+  all others 0; a Bevel of 0.5 voxel, 1 segment, limited by weight, makes the slopes
+  (``voxgen.blender.render_styles`` style ``facet``; ``facet_all`` weights every 90 degree edge).
 
 Coordinates: positions are metres in the part's local space (Godot axes, Y up, -Z forward):
 ``origin + corner * voxel_size`` where voxel (x, y, z) occupies ``[x, x+1] x [y, y+1] x [z, z+1]``.
@@ -289,3 +301,128 @@ def surface_nets(part, palette, smooth_passes=2, keep_cubic_materials=(), jitter
         if cubes.n_faces:
             out = _concat(out, cubes)
     return out
+
+
+# ----------------------------------------------------------------------------- step edges (facet)
+@dataclass
+class EdgeWeights:
+    edges: np.ndarray    # (E, 2) int32 vertex ids (min, max) of every edge of the mesh, sorted
+    weights: np.ndarray  # (E,) float32: 1 = chamfer this edge, 0 = keep it sharp
+    stats: dict          # edges, edges_90, edges_step, edges_nonmanifold
+
+    def keys(self, n_vertices: int) -> np.ndarray:
+        """(E,) int64 ``min * n_vertices + max``, sorted ascending (for ``np.searchsorted``)."""
+        return self.edges[:, 0].astype(np.int64) * n_vertices + self.edges[:, 1]
+
+
+def _run_lengths(E: np.ndarray, axis: int, forward: bool) -> np.ndarray:
+    """Length of the run of consecutive True values that ends at each index when scanning along
+    ``axis`` in the + direction (forward) or the - direction; 0 where E is False."""
+    if not forward:
+        E = np.flip(E, axis)
+    n = E.shape[axis]
+    shape = [1] * E.ndim
+    shape[axis] = n
+    idx = np.arange(n).reshape(shape)
+    last_false = np.maximum.accumulate(np.where(E, -1, idx), axis=axis)
+    run = np.where(E, idx - last_false, 0)
+    return np.flip(run, axis) if not forward else run
+
+
+def _face_extents(solid: np.ndarray) -> dict:
+    """{(normal axis a, sign s, in-plane axis k, edge side sk): (nz, ny, nx) int} - at every voxel the
+    extent of its exposed face with normal s*e_a, measured from the edge on the sk*e_k side of the
+    face, away from that edge (the voxel itself counts; 0 where the face is not exposed)."""
+    occ = np.pad(solid, 1)
+    out = {}
+    for a in range(3):  # Godot axis 0=x 1=y 2=z -> numpy axis 2-a
+        for s in (1, -1):
+            nb = np.roll(occ, -s, axis=2 - a)  # occ[v + s*e_a]
+            exposed = (occ & ~nb)[1:-1, 1:-1, 1:-1]
+            for k in range(3):
+                if k == a:
+                    continue
+                for sk in (1, -1):
+                    # edge on the +k side: the face continues toward -k = run ending at v scanning +k
+                    out[(a, s, k, sk)] = _run_lengths(exposed, 2 - k, forward=(sk > 0))
+    return out
+
+
+def step_edge_weights(m: Mesh, part, mode: str = "steps", min_run: int = 2) -> EdgeWeights:
+    """Chamfer weights for the edges of a :func:`culled_quads` mesh of ``part`` (see the module
+    docstring for the rule). ``mode``: ``"steps"`` (the rule, with ``min_run``) or ``"all"`` (every
+    90 degree edge)."""
+    N = len(m.positions)
+    if m.n_faces == 0:
+        return EdgeWeights(np.zeros((0, 2), np.int32), np.zeros(0, np.float32),
+                           {"edges": 0, "edges_90": 0, "edges_step": 0, "edges_nonmanifold": 0})
+    vs = float(part.voxel_size)
+    P = np.rint((m.positions - np.asarray(part.origin, np.float32)) / vs).astype(np.int64)  # corner units
+    Q = P[m.quads]                                    # (F, 4, 3)
+    F = len(Q)
+    C = Q.mean(1)                                     # face centre
+    a = np.argmin(Q.max(1) - Q.min(1), axis=1)        # normal axis (the flat one)
+    nrm = np.cross(Q[:, 1] - Q[:, 0], Q[:, 2] - Q[:, 0])
+    s = np.sign(nrm[np.arange(F), a]).astype(np.int64)
+    n_vec = np.zeros_like(C)
+    n_vec[np.arange(F), a] = s
+    vox = np.floor(C - 0.5 * n_vec).astype(np.int64)  # owning voxel (x, y, z)
+    # per quad side i (edge Q[i] -> Q[i+1]): extent of the face away from that edge
+    ext = np.zeros((F, 4), np.int64)
+    if mode == "steps":
+        table = _face_extents(part.solid())
+        for i in range(4):
+            d = (Q[:, i] + Q[:, (i + 1) % 4]) * 0.5 - C   # +-0.5 along one in-plane axis
+            k = np.argmax(np.abs(d), axis=1)
+            sk = np.sign(d[np.arange(F), k]).astype(np.int64)
+            for key, arr in table.items():
+                sel = (a == key[0]) & (s == key[1]) & (k == key[2]) & (sk == key[3])
+                if sel.any():
+                    v = vox[sel]
+                    ext[sel, i] = arr[v[:, 2], v[:, 1], v[:, 0]]
+    elif mode != "all":
+        raise ValueError(f"mode must be 'steps' or 'all', not {mode!r}")
+    # group the 4F quad sides into mesh edges
+    e0 = m.quads.astype(np.int64)
+    e1 = np.roll(e0, -1, axis=1)
+    key = (np.minimum(e0, e1) * N + np.maximum(e0, e1)).ravel()  # (4F,)
+    fidx = np.repeat(np.arange(F), 4)
+    side = np.tile(np.arange(4), F)
+    uniq, inv, counts = np.unique(key, return_inverse=True, return_counts=True)
+    order = np.argsort(inv, kind="stable")
+    starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+    two = counts == 2
+    ia, ib = order[starts[two]], order[starts[two] + 1]
+    fa, fb = fidx[ia], fidx[ib]
+    different = (a[fa] != a[fb]) | (s[fa] != s[fb])
+    if mode == "all":
+        step = different
+    else:
+        step = different & ((ext[fa, side[ia]] == 1) | (ext[fb, side[ib]] == 1))
+        if min_run > 1 and step.any():
+            # runs: consecutive unit edges on one line between faces of the same two normals
+            si = np.flatnonzero(step)
+            v0, v1 = e0.ravel()[ia[si]], e1.ravel()[ia[si]]
+            p0, p1 = P[v0], P[v1]
+            d = np.argmax(np.abs(p1 - p0), axis=1)        # edge direction axis
+            lo = np.minimum(p0, p1)
+            pos = lo[np.arange(len(si)), d]
+            perp = np.stack([np.where(d == 0, lo[:, 1], lo[:, 0]), np.where(d == 2, lo[:, 1], lo[:, 2])], 1)
+            nid_a = a[fa[si]] * 2 + (s[fa[si]] > 0)      # face normal id 0..5
+            nid_b = a[fb[si]] * 2 + (s[fb[si]] > 0)
+            kind = np.minimum(nid_a, nid_b) * 8 + np.maximum(nid_a, nid_b)
+            o = np.lexsort((pos, perp[:, 1], perp[:, 0], d, kind))
+            g = np.stack([kind[o], d[o], perp[o, 0], perp[o, 1]], 1)
+            new_run = np.ones(len(o), bool)
+            new_run[1:] = (g[1:] != g[:-1]).any(1) | (pos[o][1:] != pos[o][:-1] + 1)
+            run_id = np.cumsum(new_run) - 1
+            run_len = np.bincount(run_id)[run_id]
+            keep = np.empty(len(o), bool)
+            keep[o] = run_len >= min_run
+            step[si[~keep]] = False
+    w = np.zeros(len(uniq), np.float32)
+    w[np.flatnonzero(two)[step]] = 1.0
+    edges = np.stack([uniq // N, uniq % N], 1).astype(np.int32)
+    stats = {"edges": int(len(uniq)), "edges_90": int(different.sum()), "edges_step": int(step.sum()),
+             "edges_nonmanifold": int((~two).sum())}
+    return EdgeWeights(edges, w, stats)

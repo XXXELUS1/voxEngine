@@ -5,9 +5,9 @@ by ``voxgen render``; ``sheet`` only needs Pillow. The names below are shared by
 and the renderer so the CLI can validate arguments without importing bpy.
 """
 
-STYLES = ("cubes", "bevel", "smooth", "clay", "toon")
+STYLES = ("cubes", "bevel", "facet", "facet_all", "smooth", "clay", "toon")
 LIGHTS = ("studio", "candle")
-BACKGROUNDS = ("dark", "grey")
+BACKGROUNDS = ("dark", "grey", "light")
 # view name -> (azimuth deg, elevation deg, lens mm, frame margin)
 VIEWS = {
     "three_quarter": (33.0, 11.0, 50.0, 1.0),

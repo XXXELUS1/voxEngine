@@ -48,3 +48,43 @@ def test_surface_nets_keeps_hair_cubic():
     assert (m.face_material[~m.face_smooth] == MAT_HAIR).all()
     assert (m.face_material[m.face_smooth] != MAT_HAIR).all()
     assert m.face_smooth.any() and (~m.face_smooth).any()
+
+
+def _edge_weight(m, ew, c0, c1, part):
+    """Weight of the edge between the vertices at integer corners c0 and c1."""
+    corners = np.rint((m.positions - np.asarray(part.origin, np.float32)) / part.voxel_size).astype(int)
+    v0 = int(np.flatnonzero((corners == c0).all(1))[0])
+    v1 = int(np.flatnonzero((corners == c1).all(1))[0])
+    hit = (ew.edges == (min(v0, v1), max(v0, v1))).all(1)
+    assert hit.sum() == 1, (c0, c1)
+    return float(ew.weights[hit][0])
+
+
+def test_step_edge_weights_marks_steps_not_cubes_and_min_run_skips_lone_bumps():
+    from voxgen import Part
+    from voxgen.materials import MAT_SKIN
+    # a 4x4x4 cube: no step edge; "all" weights its 12 x 4 unit edges
+    cube = Part("cube", (6, 6, 6), 0.01)
+    cube.material[1:5, 1:5, 1:5] = MAT_SKIN
+    m = mesh.culled_quads(cube, [(200, 150, 120)], jitter=0.0)
+    ew = mesh.step_edge_weights(m, cube)
+    assert ew.weights.sum() == 0 and ew.stats["edges_90"] == 48 and ew.stats["edges_nonmanifold"] == 0
+    assert mesh.step_edge_weights(m, cube, mode="all").weights.sum() == 48
+    # a staircase of three 1-voxel steps (x 1..3 holds columns of height 3, 2, 1; 4 voxels wide in z)
+    st = Part("stairs", (5, 5, 6), 0.01)
+    for x, h in ((1, 3), (2, 2), (3, 1)):
+        st.material[1:5, 1:1 + h, x] = MAT_SKIN
+    m = mesh.culled_quads(st, [(200, 150, 120)], jitter=0.0)
+    ew = mesh.step_edge_weights(m, st)
+    assert ew.stats["edges_step"] > 0
+    for z in range(1, 5):
+        assert _edge_weight(m, ew, (2, 4, z), (2, 4, z + 1), st) == 1.0   # convex: top tread / riser
+        assert _edge_weight(m, ew, (2, 3, z), (2, 3, z + 1), st) == 1.0   # concave: riser / next tread
+    assert _edge_weight(m, ew, (1, 1, 1), (1, 1, 2), st) == 0.0           # bottom edge of the tall column
+    # a lone one-voxel bump on a thick slab: a step only without the run rule
+    slab = Part("slab", (8, 7, 8), 0.01)
+    slab.material[1:7, 1:5, 1:7] = MAT_SKIN
+    slab.material[4, 5, 4] = MAT_SKIN
+    m = mesh.culled_quads(slab, [(200, 150, 120)], jitter=0.0)
+    assert mesh.step_edge_weights(m, slab, min_run=1).weights.sum() == 12
+    assert mesh.step_edge_weights(m, slab).weights.sum() == 0

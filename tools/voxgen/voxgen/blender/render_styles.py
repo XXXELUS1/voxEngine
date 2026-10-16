@@ -5,11 +5,17 @@ per run; ``voxgen render`` drives this as a subprocess of the bpy venv:
         --view three_quarter --size 640 --samples 96 --out build/renders/x/cubes_studio_three_quarter.png
 
 Styles (``voxgen.blender.STYLES``): cubes (culled quads, full AO), bevel (cubes + Bevel modifier),
-smooth (surface nets, per-face voxel colour), clay (smooth + subsurface + thumb-mark bumps),
-toon (EEVEE, 3-step ramp + Freestyle outline). Lights: studio (warm key 2700K, cool rim 8000K,
-soft fill) and candle (1850K point + faint 9000K rim). Views: camera presets around the model
-bbox (``voxgen.blender.VIEWS``). In the smooth styles every material is part of the smooth
-surface; ``--cubic-materials 5,8`` (tooth, hair ids) keeps those voxels as cubes instead.
+facet (cubes whose one-voxel steps are chamfered to 45 degree slopes: ``mesh.step_edge_weights``
+with ``min_run=2`` + a Bevel limited by edge weight, 0.5 voxel, 1 segment), facet_all (every
+90 degree edge chamfered), smooth (surface nets, per-face voxel colour), clay (smooth + subsurface
++ thumb-mark bumps), toon (EEVEE, 3-step ramp + Freestyle outline). The facet styles use one flat
+material per palette colour (constant colour x corner AO) instead of the corner colour attribute,
+so the bevel faces inherit a whole colour and never blend two; their colour jitter defaults to 0.
+Lights: studio (warm key 2700K, cool rim 8000K, soft fill) and candle (1850K point + faint 9000K
+rim). Backgrounds: dark, grey, and light (warm light-grey world and ground, a cooler softer rig,
+exposure -0.7). Views: camera presets around the model bbox (``voxgen.blender.VIEWS``). In the
+smooth styles every material is part of the smooth surface; ``--cubic-materials 5,8`` (tooth, hair
+ids) keeps those voxels as cubes instead.
 
 Scene: every part of the model at its own origin (parts share the model space), Godot axes
 mapped to Blender (Y up -> Z up, -Z forward -> -Y forward), a ground plane at y = min(0, model
@@ -34,6 +40,13 @@ from voxgen import io_vxm, mesh  # noqa: E402
 from voxgen.blender import BACKGROUNDS, LIGHTS, STYLES, VIEWS  # noqa: E402
 
 SMOOTH_STYLES = ("smooth", "clay", "toon")
+FACET_STYLES = ("facet", "facet_all")
+# background preset -> (world bottom, world top, world strength), ground colour, exposure
+WORLDS = {"dark": ((0.015, 0.015, 0.017), (0.11, 0.11, 0.12), 0.3),
+          "grey": ((0.22, 0.22, 0.23), (0.55, 0.55, 0.57), 0.6),
+          "light": ((0.55, 0.52, 0.48), (1.0, 0.98, 0.95), 1.0)}
+GROUNDS = {"dark": (0.018, 0.018, 0.0189), "grey": (0.30, 0.30, 0.315), "light": (0.62, 0.59, 0.54)}
+EXPOSURES = {"dark": -0.25, "grey": -0.25, "light": -0.7}
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -199,13 +212,91 @@ def material_toon(name, ao_strength=0.4):
     return mat
 
 
-def material_ground(grey: float):
+def material_flat(name, rgb_u8, roughness=0.8, ao_strength=1.0, specular=0.5):
+    """Principled with a constant palette colour times the corner "ao" attribute. No colour
+    attribute, so a bevel face (which inherits one neighbour's material) keeps a whole palette
+    colour: crisp colour borders across the chamfers."""
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    outn = nt.nodes.new("ShaderNodeOutputMaterial")
+    outn.location = (300, 0)
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    nt.links.new(bsdf.outputs["BSDF"], outn.inputs["Surface"])
+    bsdf.inputs["Roughness"].default_value = roughness
+    bsdf.inputs["Specular IOR Level"].default_value = specular
+    a_ao = nt.nodes.new("ShaderNodeAttribute")
+    a_ao.attribute_name = "ao"
+    a_ao.location = (-900, -250)
+    m = nt.nodes.new("ShaderNodeMath")
+    m.operation = "MULTIPLY_ADD"
+    m.inputs[1].default_value = ao_strength
+    m.inputs[2].default_value = 1.0 - ao_strength
+    m.location = (-650, -250)
+    nt.links.new(a_ao.outputs["Fac"], m.inputs[0])
+    vm = nt.nodes.new("ShaderNodeVectorMath")
+    vm.operation = "SCALE"
+    vm.location = (-450, 0)
+    lin = srgb_to_linear(np.asarray(rgb_u8, np.float32))
+    vm.inputs[0].default_value = (float(lin[0]), float(lin[1]), float(lin[2]))
+    nt.links.new(m.outputs[0], vm.inputs["Scale"])
+    nt.links.new(vm.outputs["Vector"], bsdf.inputs["Base Color"])
+    return mat
+
+
+def assign_palette_materials(ob, m: mesh.Mesh, cache: dict):
+    """One flat material per distinct face colour of ``m`` (shared across parts through ``cache``);
+    material_index of every face = its colour's slot."""
+    rgb = m.face_colors[:, :3].astype(np.int64)
+    keys = rgb[:, 0] * 65536 + rgb[:, 1] * 256 + rgb[:, 2]
+    uniq, inv = np.unique(keys, return_inverse=True)
+    for k in uniq:
+        k = int(k)
+        if k not in cache:
+            cache[k] = material_flat(f"pal_{k:06x}", (k >> 16, (k >> 8) & 255, k & 255))
+        ob.data.materials.append(cache[k])
+    ob.data.polygons.foreach_set("material_index", inv.astype(np.int32).ravel())
+    ob.data.update()
+
+
+def add_chamfer(ob, ew: mesh.EdgeWeights, width_m: float):
+    """Bevel modifier limited by the per-edge weights of ``mesh.step_edge_weights``: one flat segment
+    of ``width_m`` (0.5 voxel) turns every weighted 90 degree edge into an exact 45 degree slope."""
+    me = ob.data
+    ev = np.zeros(len(me.edges) * 2, np.int64)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2)
+    nv = len(me.vertices)
+    bk = np.minimum(ev[:, 0], ev[:, 1]) * nv + np.maximum(ev[:, 0], ev[:, 1])
+    keys = ew.keys(nv)
+    pos = np.clip(np.searchsorted(keys, bk), 0, max(len(keys) - 1, 0))
+    ok = (keys[pos] == bk) if len(keys) else np.zeros(len(bk), bool)
+    w = np.where(ok, ew.weights[pos], 0.0).astype(np.float32)
+    attr = me.attributes.new(name="bevel_weight_edge", type="FLOAT", domain="EDGE")
+    attr.data.foreach_set("value", w)
+    me.update()
+    mod = ob.modifiers.new("Chamfer", "BEVEL")
+    mod.affect = "EDGES"
+    mod.offset_type = "OFFSET"
+    mod.width = width_m
+    mod.segments = 1
+    mod.limit_method = "WEIGHT"
+    mod.harden_normals = False
+    mod.use_clamp_overlap = False
+    mod.loop_slide = True
+    mod.miter_outer = "MITER_SHARP"
+    mod.miter_inner = "MITER_SHARP"
+    return mod
+
+
+def material_ground(rgb):
     mat = bpy.data.materials.new("Ground")
     mat.use_nodes = True
     b = mat.node_tree.nodes["Principled BSDF"]
-    b.inputs["Base Color"].default_value = (grey, grey, grey * 1.05, 1)
+    b.inputs["Base Color"].default_value = (*rgb, 1)
     b.inputs["Roughness"].default_value = 0.95
-    b.inputs["Specular IOR Level"].default_value = 0.2
+    b.inputs["Specular IOR Level"].default_value = 0.15 if rgb[0] > 0.5 else 0.2
     return mat
 
 
@@ -257,9 +348,14 @@ def setup_lights(preset: str, bg: str, center, size_m):
     c = Vector(center)
     s = max(size_m)
     k = (s / 0.28) ** 2  # powers were tuned on the 0.28 m head; lights sit at distances ~ s, so scale by s^2
-    world = {"dark": ((0.015, 0.015, 0.017), (0.11, 0.11, 0.12), 0.3),
-             "grey": ((0.22, 0.22, 0.23), (0.55, 0.55, 0.57), 0.6)}[bg]
-    if preset == "studio":
+    world = WORLDS[bg]
+    if preset == "studio" and bg == "light":
+        # the bright world carries the fill: a cooler, weaker key and rim so the chamfers read as planes
+        build_world(*world)
+        add_light("Key", "AREA", c + Vector((-2.6 * s, -2.4 * s, 2.8 * s)), c, 16 * k, 4300, size=1.8 * s)
+        add_light("Fill", "AREA", c + Vector((2.8 * s, -3.2 * s, 0.8 * s)), c, 4 * k, 6500, size=3.5 * s)
+        add_light("Rim", "AREA", c + Vector((2.4 * s, 2.6 * s, 2.0 * s)), c, 20 * k, 8000, size=1.0 * s)
+    elif preset == "studio":
         build_world(*world)
         add_light("Key", "AREA", c + Vector((-2.6 * s, -2.4 * s, 2.6 * s)), c, 40 * k, 2700, size=1.6 * s)
         add_light("Fill", "AREA", c + Vector((2.8 * s, -3.2 * s, 0.8 * s)), c, 7 * k, 5500, size=3.5 * s)
@@ -306,7 +402,7 @@ def setup_camera(bbox_min, bbox_max, az_deg, el_deg, lens, margin):
     return cam
 
 
-def setup_render(engine, size, samples, out_path, freestyle=False):
+def setup_render(engine, size, samples, out_path, freestyle=False, exposure=-0.25):
     scene = bpy.context.scene
     r = scene.render
     r.resolution_x = r.resolution_y = size
@@ -317,7 +413,7 @@ def setup_render(engine, size, samples, out_path, freestyle=False):
     r.film_transparent = False
     scene.view_settings.view_transform = "AgX"
     scene.view_settings.look = "AgX - Medium High Contrast"
-    scene.view_settings.exposure = -0.25
+    scene.view_settings.exposure = exposure
     if engine == "CYCLES":
         r.engine = "CYCLES"
         cy = scene.cycles
@@ -371,12 +467,17 @@ def setup_render(engine, size, samples, out_path, freestyle=False):
 
 
 # ----------------------------------------------------------------------------- main
-def build_geometry(model, style: str, cubic_materials=(), jitter: float = 0.06):
-    """One mesh object per part (each at its own origin). Returns (objects, bbox_min, bbox_max, faces).
-    ``cubic_materials``: material ids rendered as cubes inside the smooth styles; ``jitter``: the
-    per-voxel colour jitter of the cube mesher (0 = flat palette colours, the stylized look)."""
+def build_geometry(model, style: str, cubic_materials=(), jitter: float | None = None):
+    """One mesh object per part (each at its own origin). Returns (objects, bbox_min, bbox_max, faces,
+    chamfer stats). ``cubic_materials``: material ids rendered as cubes inside the smooth styles;
+    ``jitter``: the per-voxel colour jitter of the cube mesher (None = the style's default: 0 for the
+    facet styles, 0.06 otherwise; 0 = flat palette colours, the stylized look). The facet styles get
+    their per-colour materials and the weighted Chamfer bevel here."""
+    if jitter is None:
+        jitter = 0.0 if style in FACET_STYLES else 0.06
     objs, faces = [], 0
     lo, hi = None, None
+    mat_cache, chamfer = {}, {}
     for part in model.parts:
         if style in SMOOTH_STYLES:
             m = mesh.surface_nets(part, model.palette, smooth_passes=2, keep_cubic_materials=tuple(cubic_materials))
@@ -387,15 +488,23 @@ def build_geometry(model, style: str, cubic_materials=(), jitter: float = 0.06):
         ob = make_mesh_object(part.name or "part", m)
         objs.append(ob)
         faces += m.n_faces
+        if style in FACET_STYLES:
+            assign_palette_materials(ob, m, mat_cache)
+            ew = mesh.step_edge_weights(m, part, mode="all" if style == "facet_all" else "steps", min_run=2)
+            add_chamfer(ob, ew, 0.5 * part.voxel_size)
+            for key, val in ew.stats.items():
+                chamfer[key] = chamfer.get(key, 0) + val
         p = godot_to_blender(m.positions)
         lo = p.min(0) if lo is None else np.minimum(lo, p.min(0))
         hi = p.max(0) if hi is None else np.maximum(hi, p.max(0))
     if not objs:
         raise ValueError(f"model {model.name!r} has no solid voxels")
-    return objs, lo, hi, faces
+    return objs, lo, hi, faces, chamfer
 
 
 def assign_materials(objs, style: str, voxel_size: float):
+    if style in FACET_STYLES:
+        return  # per-colour flat materials were assigned in build_geometry
     if style == "cubes":
         m = material_principled("Cubes", roughness=0.8, ao_strength=1.0)
     elif style == "bevel":
@@ -430,14 +539,16 @@ def assign_materials(objs, style: str, voxel_size: float):
 
 
 def render_one(model_path, style, light, view, size, samples, out, bg="dark", engine=None, save_blend=None,
-               index=None, cubic_materials=(), jitter: float = 0.06) -> dict:
+               index=None, cubic_materials=(), jitter: float | None = None) -> dict:
     model = io_vxm.read(model_path)
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
     scene.unit_settings.system = "METRIC"
 
     t0 = time.time()
-    objs, bmin, bmax, faces = build_geometry(model, style, cubic_materials, jitter)
+    if jitter is None:
+        jitter = 0.0 if style in FACET_STYLES else 0.06
+    objs, bmin, bmax, faces, chamfer = build_geometry(model, style, cubic_materials, jitter)
     size_m = bmax - bmin
     center = (bmin + bmax) / 2
     assign_materials(objs, style, model.parts[0].voxel_size)
@@ -448,7 +559,7 @@ def render_one(model_path, style, light, view, size, samples, out, bg="dark", en
                                      location=(float(center[0]), float(center[1]), ground_z))
     ground = bpy.context.active_object
     ground.name = "Ground"
-    ground.data.materials.append(material_ground({"dark": 0.018, "grey": 0.30}[bg]))
+    ground.data.materials.append(material_ground(GROUNDS[bg]))
 
     setup_lights(light, bg, center, size_m)
     az, el, lens, margin = VIEWS[view]
@@ -460,7 +571,7 @@ def render_one(model_path, style, light, view, size, samples, out, bg="dark", en
     spl = samples if engine == "CYCLES" else max(16, samples // 4)
     out = os.path.abspath(out)
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    setup_render(engine, size, spl, out, freestyle=(style == "toon"))
+    setup_render(engine, size, spl, out, freestyle=(style == "toon"), exposure=EXPOSURES[bg])
     t_setup = time.time() - t0
     if save_blend:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(save_blend))
@@ -477,6 +588,7 @@ def render_one(model_path, style, light, view, size, samples, out, bg="dark", en
         "dims": "x".join(str(v) for v in (p0.nx, p0.ny, p0.nz)) + ("+" if len(model.parts) > 1 else ""),
         "voxel_mm": round(p0.voxel_size * 1000, 2), "blender": bpy.app.version_string, "out": out,
         "cubic_materials": [int(v) for v in cubic_materials], "jitter": jitter,
+        "exposure": EXPOSURES[bg], "chamfer": chamfer,
     }
     if index is not None:
         info["index"] = index
@@ -500,7 +612,8 @@ def main(argv=None) -> int:
     ap.add_argument("--index", type=int, default=None, help="tile order in the contact sheet")
     ap.add_argument("--cubic-materials", default="",
                     help="comma list of material ids kept as cubes in smooth/clay/toon (e.g. 5,8 = tooth, hair)")
-    ap.add_argument("--jitter", type=float, default=0.06, help="per-voxel colour jitter of the cube mesher (0 = none)")
+    ap.add_argument("--jitter", type=float, default=None,
+                    help="per-voxel colour jitter of the cube mesher (default 0.06, facet styles 0; 0 = none)")
     args = ap.parse_args(argv)
     cubic = [int(v) for v in args.cubic_materials.split(",") if v.strip()]
     info = render_one(args.model, args.style, args.light, args.view, args.size, args.samples, args.out,

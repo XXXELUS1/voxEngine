@@ -19,9 +19,9 @@ voxgen preview <file.vxm|.vox|spec.py> [--out x.png] [--size 256] [--part NAME]
 voxgen check <file.vxm>                 печатает отчёт проверок (json) и возвращает 1 при ошибках
 voxgen import-vox <file.vox> --spec-json <file.vox.json> --out <file.vxm>
 voxgen info <file.vxm>                  части, размеры, число вокселей, материалы
-voxgen render <model.vxm|spec.py> [--styles cubes,bevel,smooth,clay,toon] [--light studio|candle]
-              [--views three_quarter,front,profile,full] [--size 640] [--samples 96] [--bg dark|grey]
-              [--out build/renders/<name>/] [--cubic-materials 5,8] [--save-blend]
+voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,clay,toon]
+              [--light studio|candle] [--views three_quarter,front,profile,full] [--size 640] [--samples 96]
+              [--bg dark|grey|light] [--out build/renders/<name>/] [--cubic-materials 5,8] [--jitter 0] [--save-blend]
     Красивые рендеры в Blender (bpy как python-модуль, venv из scripts/install_blender.sh:
     $VOXENGINE_BPY или ~/.cache/voxengine/venv-bpy; без него — понятная ошибка с командой установки).
     Для спека .py сначала собирает .vxm в godot/assets/models (без проверок). На каждую пару
@@ -29,8 +29,12 @@ voxgen render <model.vxm|spec.py> [--styles cubes,bevel,smooth,clay,toon] [--lig
     <style>_<light>_<view>.png + .json (движок, сэмплы, секунды, грани) + .log, затем sheet.png
     с подписями; печатает время. Все части модели — в одной сцене, каждая в своём origin;
     плоскость пола на y = min(0, низ модели), поэтому пропсы на y=0 стоят на полу.
-    Стили: cubes (culled quads + AO), bevel (кубы + Bevel), smooth (surface nets, цвет по вокселю),
-    clay (smooth + подповерхностное + «отпечатки»), toon (EEVEE, 3-ступенчатая рампа + Freestyle);
+    Стили: cubes (culled quads + AO), bevel (кубы + Bevel), facet (кубы, у которых одновоксельные
+    ступеньки скошены под 45°: `mesh.step_edge_weights`, правило в докстринге модуля, `min_run=2` —
+    одиночный бугорок остаётся кубом; один плоский материал на цвет палитры, чтобы фаски не смешивали
+    цвета; `--jitter` по умолчанию 0), facet_all (скошено каждое ребро 90°), smooth (surface nets,
+    цвет по вокселю), clay (smooth + подповерхностное + «отпечатки»), toon (EEVEE, 3-ступенчатая рампа
+    + Freestyle); фон `--bg`: dark, grey, light (тёплый светло-серый мир и пол, экспозиция −0.7);
     в smooth-стилях волосы и зубы по умолчанию — часть гладкой поверхности; `--cubic-materials 5,8`
     (id или имена материалов: tooth,hair) оставляет их кубиками. Код возврата 1, если хоть один рендер упал.
 voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]   пересобрать контактный лист из рендеров

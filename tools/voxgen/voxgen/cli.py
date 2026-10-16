@@ -6,8 +6,9 @@
     voxgen check <file.vxm>
     voxgen import-vox <file.vox> --spec-json <file.vox.json> --out <file.vxm>
     voxgen info <file.vxm>
-    voxgen render <model.vxm|spec.py> [--styles cubes,bevel,smooth,clay,toon] [--light studio|candle]
-                  [--views three_quarter,front,profile,full] [--size 640] [--samples 96] [--bg dark|grey]
+    voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,clay,toon]
+                  [--light studio|candle] [--views three_quarter,front,profile,full] [--size 640]
+                  [--samples 96] [--bg dark|grey|light]
                   [--out build/renders/<name>/] [--cubic-materials 5,8] [--jitter 0] [--save-blend]
     voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]
 
@@ -419,13 +420,15 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--views", default="three_quarter", help="comma list of " + ",".join(VIEWS))
     p.add_argument("--size", type=int, default=640, help="square render size in px (default 640)")
     p.add_argument("--samples", type=int, default=96, help="Cycles samples (toon/EEVEE uses samples//4)")
-    p.add_argument("--bg", default="dark", choices=BACKGROUNDS)
+    p.add_argument("--bg", default="dark", choices=BACKGROUNDS,
+                   help="background preset: dark (default), grey, light (warm light grey, exposure -0.7)")
     p.add_argument("--out", default=None, help=f"output dir (default {DEFAULT_RENDERS}/<name>/)")
     p.add_argument("--cubic-materials", default="",
                    help="material ids (or names) kept as cubes in smooth/clay/toon, e.g. 5,8 = tooth,hair; "
                         "default: none, hair and teeth are part of the smooth surface")
     p.add_argument("--jitter", type=float, default=None,
-                   help="per-voxel colour jitter of the cubes/bevel mesher (default: its own 0.06; 0 = flat palette colours)")
+                   help="per-voxel colour jitter of the cubes/bevel mesher (default 0.06, facet styles 0; "
+                        "0 = flat palette colours)")
     p.add_argument("--save-blend", action="store_true", help="also save a .blend next to each png")
     p.set_defaults(func=cmd_render)
 

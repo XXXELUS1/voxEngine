@@ -19,7 +19,26 @@ voxgen preview <file.vxm|.vox|spec.py> [--out x.png] [--size 256] [--part NAME]
 voxgen check <file.vxm>                 печатает отчёт проверок (json) и возвращает 1 при ошибках
 voxgen import-vox <file.vox> --spec-json <file.vox.json> --out <file.vxm>
 voxgen info <file.vxm>                  части, размеры, число вокселей, материалы
+voxgen render <model.vxm|spec.py> [--styles cubes,bevel,smooth,clay,toon] [--light studio|candle]
+              [--views three_quarter,front,profile,full] [--size 640] [--samples 96] [--bg dark|grey]
+              [--out build/renders/<name>/] [--save-blend]
+    Красивые рендеры в Blender (bpy как python-модуль, venv из scripts/install_blender.sh:
+    $VOXENGINE_BPY или ~/.cache/voxengine/venv-bpy; без него — понятная ошибка с командой установки).
+    Для спека .py сначала собирает .vxm в godot/assets/models (без проверок). На каждую пару
+    стиль×вид запускает подпроцесс venv-python `voxgen.blender.render_styles`; пишет
+    <style>_<light>_<view>.png + .json (движок, сэмплы, секунды, грани) + .log, затем sheet.png
+    с подписями; печатает время. Все части модели — в одной сцене, каждая в своём origin;
+    плоскость пола на y = min(0, низ модели), поэтому пропсы на y=0 стоят на полу.
+    Стили: cubes (culled quads + AO), bevel (кубы + Bevel), smooth (surface nets, цвет по вокселю),
+    clay (smooth + подповерхностное + «отпечатки»), toon (EEVEE, 3-ступенчатая рампа + Freestyle);
+    волосы и зубы в smooth-стилях остаются кубиками. Код возврата 1, если хоть один рендер упал.
+voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]   пересобрать контактный лист из рендеров
 ```
+
+Мешеры `voxgen.mesh` (чистый numpy, без Blender): `culled_quads(part, palette, jitter, ao)` и
+`surface_nets(part, palette, smooth_passes, keep_cubic_materials)` → `Mesh` (positions float32 (N,3) в
+метрах local space части, оси Godot; quads int32 (F,4) CCW снаружи; face_colors uint8 (F,4) rgb+ao;
+face_material; corner_ao; face_smooth; vertex_colors для surface nets).
 
 ## Спек-файл
 
@@ -41,4 +60,4 @@ Python-модуль с функцией `build() -> voxgen.Model`. Пример:
 
 ## Тесты
 
-`tools/voxgen/tests/` на pytest: roundtrip vxm, roundtrip vox, SDF-примитивы (объём сферы ±), fill_layers порядок слоёв, checks на синтетике, рендер даёт непустое изображение, CLI build на `specs/head_test.py` в tmp.
+`tools/voxgen/tests/` на pytest: roundtrip vxm, roundtrip vox, SDF-примитивы (объём сферы ±), fill_layers порядок слоёв, checks на синтетике, рендер даёт непустое изображение, CLI build на `specs/head_test.py` в tmp. Мешеры: знаковый объём culled quads сферы = число вокселей × voxel_size³; surface nets непустой и замкнутый (каждое ребро у двух квадов).

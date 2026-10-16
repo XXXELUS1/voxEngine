@@ -6,6 +6,10 @@
     voxgen check <file.vxm>
     voxgen import-vox <file.vox> --spec-json <file.vox.json> --out <file.vxm>
     voxgen info <file.vxm>
+    voxgen render <model.vxm|spec.py> [--styles cubes,bevel,smooth,clay,toon] [--light studio|candle]
+                  [--views three_quarter,front,profile,full] [--size 640] [--samples 96] [--bg dark|grey]
+                  [--out build/renders/<name>/] [--save-blend]
+    voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]
 
 Exit code 1 when checks report errors (build, build-all, check) or on failure.
 """
@@ -15,6 +19,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import time
 import traceback
@@ -22,6 +28,7 @@ from pathlib import Path
 
 from . import __version__, checks, io_vox, io_vxm
 from . import materials as M
+from .blender import BACKGROUNDS, LIGHTS, STYLES, VIEWS
 from .model import Model
 from .render import SLICE_VIEWS, VIEW_NAMES, contact_sheet, render_views
 
@@ -29,6 +36,8 @@ DEFAULT_OUT = "godot/assets/models"
 DEFAULT_PREVIEW = "build/previews"
 DEFAULT_VOX = "build/vox"
 DEFAULT_REPORT = "build/reports"
+DEFAULT_RENDERS = "build/renders"
+DEFAULT_BPY_VENV = "~/.cache/voxengine/venv-bpy"
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +264,88 @@ def cmd_import_vox(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# render (Blender) / render-sheet
+# ---------------------------------------------------------------------------
+
+def blender_python() -> Path:
+    """Python of the bpy venv: ``$VOXENGINE_BPY`` or ``~/.cache/voxengine/venv-bpy``."""
+    venv = Path(os.environ.get("VOXENGINE_BPY") or DEFAULT_BPY_VENV).expanduser()
+    for rel in ("bin/python", "Scripts/python.exe"):
+        py = venv / rel
+        if py.exists():
+            return py
+    raise FileNotFoundError(f"Blender python venv not found at {venv}: run scripts/install_blender.sh "
+                            f"(or point VOXENGINE_BPY at a venv with bpy, numpy, pillow)")
+
+
+def _csv(text: str, known, what: str) -> list[str]:
+    items = [v.strip() for v in text.split(",") if v.strip()]
+    bad = [v for v in items if v not in known]
+    if bad or not items:
+        raise ValueError(f"unknown {what} {bad or text!r}; known: {','.join(known)}")
+    return items
+
+
+def cmd_render(args) -> int:
+    from .blender.sheet import make_sheet
+    styles = _csv(args.styles, STYLES, "styles")
+    views = _csv(args.views, list(VIEWS), "views")
+    py = blender_python()
+    src = Path(args.model)
+    if src.suffix == ".py":
+        model, _ = build_one(src, DEFAULT_OUT, None, None, None, check=False, quiet=True)
+        vxm = Path(DEFAULT_OUT) / f"{model.name}.vxm"
+        print(f"built {vxm}")
+    else:
+        vxm = src
+        if not vxm.exists():
+            raise FileNotFoundError(vxm)
+    out_dir = Path(args.out) if args.out else Path(DEFAULT_RENDERS) / vxm.stem
+    out_dir.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    pkg_root = str(Path(__file__).resolve().parents[1])  # tools/voxgen, so the venv needs no voxgen install
+    env["PYTHONPATH"] = pkg_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    jobs = [(st, vw) for st in styles for vw in views]
+    t_all = time.perf_counter()
+    failed = 0
+    for i, (style, view) in enumerate(jobs):
+        png = out_dir / f"{style}_{args.light}_{view}.png"
+        cmd = [str(py), "-m", "voxgen.blender.render_styles", str(vxm.resolve()), "--style", style,
+               "--light", args.light, "--view", view, "--size", str(args.size), "--samples", str(args.samples),
+               "--bg", args.bg, "--out", str(png.resolve()), "--index", str(i)]
+        if args.save_blend:
+            cmd += ["--save-blend", str(png.with_suffix(".blend").resolve())]
+        t0 = time.perf_counter()
+        proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        dt = time.perf_counter() - t0
+        log = png.with_suffix(".log")
+        log.write_text(proc.stdout + proc.stderr, encoding="utf-8")
+        info_line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("RENDER_INFO ")), None)
+        if proc.returncode != 0 or info_line is None or not png.exists():
+            failed += 1
+            tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-15:])
+            print(f"[{style}/{view}] FAILED (exit {proc.returncode}) after {dt:.1f}s, log: {log}\n{tail}",
+                  file=sys.stderr)
+            continue
+        info = json.loads(info_line[len("RENDER_INFO "):])
+        print(f"[{style}/{view}] {png}  {info['engine']} {info['samples']} spl, {info['faces']:,} faces, "
+              f"render {info['render_seconds']}s (total {dt:.1f}s)")
+    try:
+        sheet = make_sheet(out_dir, tile=min(args.size, 640))
+        print(f"sheet: {sheet}")
+    except FileNotFoundError as e:
+        print(f"no sheet: {e}", file=sys.stderr)
+    print(f"{len(jobs) - failed}/{len(jobs)} renders in {time.perf_counter() - t_all:.1f}s -> {out_dir}")
+    return 1 if failed else 0
+
+
+def cmd_render_sheet(args) -> int:
+    from .blender.sheet import make_sheet
+    print(make_sheet(args.dir, out=args.out, tile=args.tile))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 
 def _add_build_opts(p):
     p.add_argument("--out", default=DEFAULT_OUT, help=f".vxm output dir (default {DEFAULT_OUT})")
@@ -301,6 +392,24 @@ def make_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("info", help="print parts, dims, voxel counts and materials of a .vxm")
     p.add_argument("file")
     p.set_defaults(func=cmd_info)
+
+    p = sub.add_parser("render", help="Blender beauty renders (bpy venv, see scripts/install_blender.sh)")
+    p.add_argument("model", help=".vxm, or a spec .py (built to godot/assets/models first)")
+    p.add_argument("--styles", default=",".join(STYLES), help="comma list of " + ",".join(STYLES))
+    p.add_argument("--light", default="studio", choices=LIGHTS)
+    p.add_argument("--views", default="three_quarter", help="comma list of " + ",".join(VIEWS))
+    p.add_argument("--size", type=int, default=640, help="square render size in px (default 640)")
+    p.add_argument("--samples", type=int, default=96, help="Cycles samples (toon/EEVEE uses samples//4)")
+    p.add_argument("--bg", default="dark", choices=BACKGROUNDS)
+    p.add_argument("--out", default=None, help=f"output dir (default {DEFAULT_RENDERS}/<name>/)")
+    p.add_argument("--save-blend", action="store_true", help="also save a .blend next to each png")
+    p.set_defaults(func=cmd_render)
+
+    p = sub.add_parser("render-sheet", help="rebuild sheet.png from the renders (+ .json side-cars) in a dir")
+    p.add_argument("dir")
+    p.add_argument("--out", default=None, help="sheet path (default <dir>/sheet.png)")
+    p.add_argument("--tile", type=int, default=640)
+    p.set_defaults(func=cmd_render_sheet)
     return ap
 
 

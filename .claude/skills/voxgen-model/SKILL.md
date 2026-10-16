@@ -54,6 +54,17 @@ description: Use when creating or changing a voxel model (a head, a body part, a
 - Проверки: `checks.run(model)` — `floating`, `budget`, `palette_size`, `symmetry_x`, `layer_order`, `hollow`.
 - IO: `io_vxm.write/read`, `io_vox.write/read/import_vox`; рендер: `render.contact_sheet(model, size)`.
 
+## Рендер в Blender (красивые картинки для владельца)
+
+- Один раз: `scripts/install_blender.sh` (venv `~/.cache/voxengine/venv-bpy`, python3.11 + bpy 4.5 LTS, ~300 МБ).
+- `python3 -m voxgen render godot/assets/models/<name>.vxm --styles cubes,bevel,smooth,clay,toon
+  --light studio|candle --views three_quarter,front,profile,full --size 640 --samples 96` (или
+  `scripts/blender_render.sh ...`) → `build/renders/<name>/<style>_<light>_<view>.png` + `sheet.png`.
+  Можно дать спек `.py` — соберётся сам. Cycles CPU 640 px / 96 spl ≈ 35–50 с на стиль; для быстрой
+  проверки `--size 384 --samples 32`. Смотреть `sheet.png` (Read) — подписи: стиль, вид/свет, движок, секунды.
+- Пересобрать лист после ручной чистки папки: `python3 -m voxgen render-sheet build/renders/<name>`.
+- Стили — только для оценки вида (стиль-гайд, раздел 8), в данные модели шум/сглаживание не пишем.
+
 ## Экспорт для владельца и обратный импорт правок из MagicaVoxel
 
 - `build` уже пишет `build/vox/<name>.vox` (формат 150, `nTRN/nSHP` на часть) и `<name>.vox.json`

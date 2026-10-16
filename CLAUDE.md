@@ -52,6 +52,8 @@ make screenshot     # сцена lab через Xvfb + llvmpipe → build/lab.pn
 python3 -m voxgen build tools/voxgen/specs/head_test.py                 # одна модель + превью + .vox + отчёт
 python3 -m voxgen preview godot/assets/models/head_test.vxm --views front,iso,slice_x --out build/previews/x.png
 python3 -m voxgen check godot/assets/models/head_test.vxm                # отчёт проверок; info — состав модели
+python3 -m voxgen render godot/assets/models/head_test.vxm --styles cubes,clay --views three_quarter  # Blender-рендеры → build/renders/head_test/sheet.png
+scripts/install_blender.sh                                               # один раз: venv с bpy 4.5 для voxgen render
 godot --headless --audio-driver Dummy --path godot --import              # после правок сцен/скриптов/class_name
 godot --headless --audio-driver Dummy --path godot -s res://tests/run_tests.gd
 ```

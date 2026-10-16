@@ -28,9 +28,22 @@ def test_surface_nets_closed_and_volume_close():
     assert 0.85 * expected < m.signed_volume() < 1.05 * expected
 
 
-def test_surface_nets_keeps_hair_cubic():
+def test_surface_nets_default_smooths_hair():
     model, p = layered_ball(n=24, r=0.05, hair=True)
     m = mesh.surface_nets(p, model.palette)
+    assert m.n_faces > 0 and m.face_smooth.all() and not (~m.face_smooth).any()
+    assert (m.face_material == MAT_HAIR).any() and m.signed_volume() > 0
+    # thin hair strands give naive surface nets edges shared by 4 quads (not a 2-manifold), but no holes
+    q = m.quads
+    e = np.stack([np.concatenate([q[:, i] for i in range(4)]), np.concatenate([q[:, (i + 1) % 4] for i in range(4)])], 1)
+    e.sort(axis=1)
+    _, counts = np.unique(e, axis=0, return_counts=True)
+    assert (counts % 2 == 0).all() and (counts >= 2).all()
+
+
+def test_surface_nets_keeps_hair_cubic():
+    model, p = layered_ball(n=24, r=0.05, hair=True)
+    m = mesh.surface_nets(p, model.palette, keep_cubic_materials=mesh.CUBIC_MATERIALS)
     assert m.n_faces > 0
     assert (m.face_material[~m.face_smooth] == MAT_HAIR).all()
     assert (m.face_material[m.face_smooth] != MAT_HAIR).all()

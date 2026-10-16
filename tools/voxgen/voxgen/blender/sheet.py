@@ -68,9 +68,9 @@ def make_sheet(dir_path, out=None, tile: int = 640, cols: int = 3, pad: int = 12
         style = info.get("style", png.stem)
         d.text((x + 10, y + tile + 4), style, font=f_big, fill=(235, 235, 235))
         faces = info.get("faces")
+        faces_txt = f"{faces:,} faces" if isinstance(faces, int) else "? faces"
         txt = (f"{info.get('view', '?')} / {info.get('light', '?')}  |  {info.get('engine', '?')} "
-               f"{info.get('samples', '?')} spl  |  {info.get('render_seconds', '?')} s  |  "
-               f"{faces:,} faces" if isinstance(faces, int) else "? faces")
+               f"{info.get('samples', '?')} spl  |  {info.get('render_seconds', '?')} s  |  {faces_txt}")
         d.text((x + 10, y + tile + 34), txt, font=_fit_font(d, txt, tile - 20, FONT), fill=(170, 170, 175))
     info0 = tiles[0][1]
     foot = (f"{info0.get('model', dir_path.name)}  {info0.get('dims', '')} @ {info0.get('voxel_mm', '?')} mm   -   "

@@ -62,6 +62,7 @@ description: Use when creating or changing a voxel model (a head, a body part, a
   `scripts/blender_render.sh ...`) → `build/renders/<name>/<style>_<light>_<view>.png` + `sheet.png`.
   Можно дать спек `.py` — соберётся сам. Cycles CPU 640 px / 96 spl ≈ 35–50 с на стиль; для быстрой
   проверки `--size 384 --samples 32`. Смотреть `sheet.png` (Read) — подписи: стиль, вид/свет, движок, секунды.
+  В smooth/clay/toon волосы и зубы сглаживаются вместе с кожей; `--cubic-materials 5,8` оставляет их кубиками.
 - Пересобрать лист после ручной чистки папки: `python3 -m voxgen render-sheet build/renders/<name>`.
 - Стили — только для оценки вида (стиль-гайд, раздел 8), в данные модели шум/сглаживание не пишем.
 

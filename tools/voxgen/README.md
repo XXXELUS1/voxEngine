@@ -76,6 +76,9 @@ def build():
 - `render.render_views(model_or_part, views, size) -> {name: PIL.Image}`, `render.contact_sheet(...)`,
   `render.tint_state(rgb, state)` — та же тонировка состояний, что в мешере voxbody.
 - `io_vxm.write/read`, `io_vox.write/read/import_vox`.
+- Импорт мешей: `objmesh.load_obj` (OBJ по группам), `meshvox` (`VoxelGrid`, `voxelize_surface`, `fill_interior`,
+  `voxelize_solid`, `voxelize_offset_shell`, `close_holes`, трансформы), `mh.load()` (меш MakeHuman в пространстве Godot,
+  хелперы, суставы, `landmarks()`), `head_from_mesh.build_head(voxel_size, HeadParams())` — голова из меша.
 
 Материалы — `voxgen/materials.py` (те же id, что в `docs/spec/vxm-format.md` и `voxel_volume.h`).
 
@@ -84,7 +87,10 @@ def build():
 - `specs/_human_head.py` — параметрическая голова `build_head(voxel_size_m, dims_hint=None, variant="default")`:
   слои кожа/жир/мышца, череп + челюсть, зубы, хрящи ушей и носа, глаза, сосуды, волосы, щетина, брови.
   Варианты: `default`, `bald`, `shaved`.
-- `specs/head_test.py` — голова 5 мм (её грузит лабораторная сцена Godot: `godot/assets/models/head_test.vxm`).
+- `specs/head_mh.py` — голова из меша MakeHuman hm08 (`voxgen.head_from_mesh.build_head(0.005, HeadParams())`,
+  меш в `assets/makehuman/base.obj`, CC0); `specs/calibration/head_mh_3mm.py` — та же при 3 мм.
+- `specs/head_test.py` — голова 5 мм, которую грузит лабораторная сцена Godot (`godot/assets/models/head_test.vxm`);
+  с 2026-10-16 это голова из меша (как `head_mh`), SDF-голова осталась в `_human_head.py` и `calibration/head_{3,5,8}mm.py`.
 - `specs/calibration/head_{3,5,8}mm.py` — та же голова для сравнения размера вокселя.
 - `specs/props/{stool,mug,razor}.py` — табурет (15 мм), кружка (10 мм), бритва (4 мм).
 

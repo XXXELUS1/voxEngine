@@ -21,7 +21,7 @@ voxgen import-vox <file.vox> --spec-json <file.vox.json> --out <file.vxm>
 voxgen info <file.vxm>                  части, размеры, число вокселей, материалы
 voxgen render <model.vxm|spec.py> [--styles cubes,bevel,smooth,clay,toon] [--light studio|candle]
               [--views three_quarter,front,profile,full] [--size 640] [--samples 96] [--bg dark|grey]
-              [--out build/renders/<name>/] [--save-blend]
+              [--out build/renders/<name>/] [--cubic-materials 5,8] [--save-blend]
     Красивые рендеры в Blender (bpy как python-модуль, venv из scripts/install_blender.sh:
     $VOXENGINE_BPY или ~/.cache/voxengine/venv-bpy; без него — понятная ошибка с командой установки).
     Для спека .py сначала собирает .vxm в godot/assets/models (без проверок). На каждую пару
@@ -31,12 +31,13 @@ voxgen render <model.vxm|spec.py> [--styles cubes,bevel,smooth,clay,toon] [--lig
     плоскость пола на y = min(0, низ модели), поэтому пропсы на y=0 стоят на полу.
     Стили: cubes (culled quads + AO), bevel (кубы + Bevel), smooth (surface nets, цвет по вокселю),
     clay (smooth + подповерхностное + «отпечатки»), toon (EEVEE, 3-ступенчатая рампа + Freestyle);
-    волосы и зубы в smooth-стилях остаются кубиками. Код возврата 1, если хоть один рендер упал.
+    в smooth-стилях волосы и зубы по умолчанию — часть гладкой поверхности; `--cubic-materials 5,8`
+    (id или имена материалов: tooth,hair) оставляет их кубиками. Код возврата 1, если хоть один рендер упал.
 voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]   пересобрать контактный лист из рендеров
 ```
 
 Мешеры `voxgen.mesh` (чистый numpy, без Blender): `culled_quads(part, palette, jitter, ao)` и
-`surface_nets(part, palette, smooth_passes, keep_cubic_materials)` → `Mesh` (positions float32 (N,3) в
+`surface_nets(part, palette, smooth_passes, keep_cubic_materials=())` → `Mesh` (positions float32 (N,3) в
 метрах local space части, оси Godot; quads int32 (F,4) CCW снаружи; face_colors uint8 (F,4) rgb+ao;
 face_material; corner_ao; face_smooth; vertex_colors для surface nets).
 
@@ -57,6 +58,22 @@ Python-модуль с функцией `build() -> voxgen.Model`. Пример:
 - Рендер превью: ортографический raymarcher на numpy, 6 сторон + 2 изометрии, ламберт + AO по соседям + контур; палитра применяется; состояние тонируется как в мешере (см. `docs/spec/voxbody-api.md`). Контактный лист 4×2 с подписями видов и инфо (имя, dims, voxel count). Выходной PNG — это «глаза» агента.
 - Проверки (`checks.py`): `floating` (компоненты, не связанные с самой большой, 6-связность; error если > N вокселей, warning иначе), `budget` (лимит вокселей на часть), `palette_size`, `symmetry_x` (процент несимметричных вокселей, если часть помечена symmetric=True), `layer_order` (кожа не внутри кости и т.п. — hair только снаружи skin), `hollow` (воздух внутри тела — warning). Отчёт: `{"errors": [...], "warnings": [...], "stats": {...}}`.
 - IO: `io_vxm.write(model, path)`, `io_vxm.read(path) -> Model`, `io_vox.write(model, path)`, `io_vox.read(path)`.
+- Импорт мешей (`objmesh.py`, `meshvox.py`): `load_obj(path) -> ObjMesh` (вершины, треугольники, имя группы
+  на грань, `vt` при наличии; `select(groups)`, `group_centre`, `vertex_normals`, `open_edges`, `transformed(fn)`);
+  `VoxelGrid.from_box(lo, hi, vs, centre_x=True)`, `voxelize_surface(mesh, grid)` (выборка каждого треугольника с шагом
+  ≤ ½ вокселя), `fill_interior(surface, sealed_faces=("-y",)) -> (solid, info)` (заливка 6-связным потоком от границы
+  сетки, запечатанные грани — для среза шеи; `info["leak"]` — дырка в оболочке), `voxelize_solid`, `voxelize_offset_shell`
+  (смещение по нормалям — толстая оболочка), `close_holes` (закрыть открытые контуры веером), `clip_faces`, `crop`,
+  трансформы `scale`/`rotate_y180`/`flip_z`/`translate` (MakeHuman: дм → м, лицо +Z → −Z).
+- MakeHuman (`mh.py`): `load()` — базовый меш hm08 (CC0, `tools/voxgen/assets/makehuman/base.obj`, сеть не нужна)
+  в пространстве Godot (метры, лицо в −Z, ступни на y=0); `body()`, `helper("l_eye"|"upper_teeth"|"hair"|…)`,
+  `joint(name)`/`joints()` (125 кубиков-суставов — готовый скелет), `landmarks()` (центры глаз, рот по зубам, кончик носа,
+  подбородок, уши, макушка, основание шеи, линия бровей, конвенция линии роста волос `eye_y + 0.07`).
+- Голова из меша (`head_from_mesh.py`): `build_head(voxel_size, HeadParams(), name) -> Model` — срез по суставу шеи,
+  вокселизация + заливка, слои по глубине (BFS от воздуха): кожа ≥ 5 мм, жир ~4 мм (щёки толще), мышца, кость с
+  глубины 9 мм над бровями / 16 мм под ними (шея — только задняя половина), зубы и глаза из хелперов (радужка + блик
+  на открытой части), хрящ в ушах и носу, волосы — сплошная шапка (скальп меша, выдавленный по нормали на
+  `hair_thickness`, тоньше к линии роста), тинты кожи (губы, брови, щетина 60 %, румянец, ноздри), зеркало по X.
 
 ## Тесты
 

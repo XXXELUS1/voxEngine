@@ -8,7 +8,8 @@ Styles (``voxgen.blender.STYLES``): cubes (culled quads, full AO), bevel (cubes 
 smooth (surface nets, per-face voxel colour), clay (smooth + subsurface + thumb-mark bumps),
 toon (EEVEE, 3-step ramp + Freestyle outline). Lights: studio (warm key 2700K, cool rim 8000K,
 soft fill) and candle (1850K point + faint 9000K rim). Views: camera presets around the model
-bbox (``voxgen.blender.VIEWS``). Hair and teeth stay cubic in the smooth styles.
+bbox (``voxgen.blender.VIEWS``). In the smooth styles every material is part of the smooth
+surface; ``--cubic-materials 5,8`` (tooth, hair ids) keeps those voxels as cubes instead.
 
 Scene: every part of the model at its own origin (parts share the model space), Godot axes
 mapped to Blender (Y up -> Z up, -Z forward -> -Y forward), a ground plane at y = min(0, model
@@ -370,13 +371,14 @@ def setup_render(engine, size, samples, out_path, freestyle=False):
 
 
 # ----------------------------------------------------------------------------- main
-def build_geometry(model, style: str):
-    """One mesh object per part (each at its own origin). Returns (objects, bbox_min, bbox_max, faces)."""
+def build_geometry(model, style: str, cubic_materials=()):
+    """One mesh object per part (each at its own origin). Returns (objects, bbox_min, bbox_max, faces).
+    ``cubic_materials``: material ids rendered as cubes inside the smooth styles."""
     objs, faces = [], 0
     lo, hi = None, None
     for part in model.parts:
         if style in SMOOTH_STYLES:
-            m = mesh.surface_nets(part, model.palette, smooth_passes=2)
+            m = mesh.surface_nets(part, model.palette, smooth_passes=2, keep_cubic_materials=tuple(cubic_materials))
         else:
             m = mesh.culled_quads(part, model.palette, jitter=0.06, ao=True)
         if m.n_faces == 0:
@@ -427,14 +429,14 @@ def assign_materials(objs, style: str, voxel_size: float):
 
 
 def render_one(model_path, style, light, view, size, samples, out, bg="dark", engine=None, save_blend=None,
-               index=None) -> dict:
+               index=None, cubic_materials=()) -> dict:
     model = io_vxm.read(model_path)
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
     scene.unit_settings.system = "METRIC"
 
     t0 = time.time()
-    objs, bmin, bmax, faces = build_geometry(model, style)
+    objs, bmin, bmax, faces = build_geometry(model, style, cubic_materials)
     size_m = bmax - bmin
     center = (bmin + bmax) / 2
     assign_materials(objs, style, model.parts[0].voxel_size)
@@ -473,6 +475,7 @@ def render_one(model_path, style, light, view, size, samples, out, bg="dark", en
         "model": model.name, "parts": [p.name for p in model.parts],
         "dims": "x".join(str(v) for v in (p0.nx, p0.ny, p0.nz)) + ("+" if len(model.parts) > 1 else ""),
         "voxel_mm": round(p0.voxel_size * 1000, 2), "blender": bpy.app.version_string, "out": out,
+        "cubic_materials": [int(v) for v in cubic_materials],
     }
     if index is not None:
         info["index"] = index
@@ -494,9 +497,13 @@ def main(argv=None) -> int:
     ap.add_argument("--engine", default=None, help="override: CYCLES or EEVEE")
     ap.add_argument("--save-blend", default=None, help="also save the scene as this .blend")
     ap.add_argument("--index", type=int, default=None, help="tile order in the contact sheet")
+    ap.add_argument("--cubic-materials", default="",
+                    help="comma list of material ids kept as cubes in smooth/clay/toon (e.g. 5,8 = tooth, hair)")
     args = ap.parse_args(argv)
+    cubic = [int(v) for v in args.cubic_materials.split(",") if v.strip()]
     info = render_one(args.model, args.style, args.light, args.view, args.size, args.samples, args.out,
-                      bg=args.bg, engine=args.engine, save_blend=args.save_blend, index=args.index)
+                      bg=args.bg, engine=args.engine, save_blend=args.save_blend, index=args.index,
+                      cubic_materials=cubic)
     print("RENDER_INFO " + json.dumps(info), flush=True)
     return 0
 

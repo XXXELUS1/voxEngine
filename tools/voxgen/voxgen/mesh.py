@@ -7,8 +7,9 @@ Pure numpy, importable without Blender. Two builders, both returning a :class:`M
   (classic "0fps" 3-neighbour count).
 * :func:`surface_nets` - naive surface nets on the occupancy with cell-clamped Laplacian
   smoothing; faces keep the colour of the voxel that owns them (crisp eyes, lips), vertices get
-  a "cavity" AO. Materials in ``keep_cubic_materials`` (teeth, hair) are excluded from the smooth
-  surface and appended as culled cubes (culled against the full occupancy).
+  a "cavity" AO. Materials in ``keep_cubic_materials`` (empty by default, so hair and teeth are
+  part of the smooth surface; ``CUBIC_MATERIALS`` = teeth + hair restores the cubic look) are
+  excluded from the smooth surface and appended as culled cubes (culled against the full occupancy).
 
 Coordinates: positions are metres in the part's local space (Godot axes, Y up, -Z forward):
 ``origin + corner * voxel_size`` where voxel (x, y, z) occupies ``[x, x+1] x [y, y+1] x [z, z+1]``.
@@ -267,9 +268,9 @@ def _surface_nets(material, color, pal, solid, smooth_passes, jitter, inset=0.02
         vrgb, vao.astype(np.float32)
 
 
-def surface_nets(part, palette, smooth_passes=2, keep_cubic_materials=CUBIC_MATERIALS, jitter=0.04) -> Mesh:
+def surface_nets(part, palette, smooth_passes=2, keep_cubic_materials=(), jitter=0.04) -> Mesh:
     """Smooth surface of a part (naive surface nets + clamped Laplacian), with the materials in
-    ``keep_cubic_materials`` left out of the surface and appended as culled cubes."""
+    ``keep_cubic_materials`` (none by default) left out of the surface and appended as culled cubes."""
     material, color = part.material, part.color
     pal = _palette_u8(palette)
     cubic = np.isin(material, list(keep_cubic_materials)) if keep_cubic_materials else np.zeros_like(material, bool)

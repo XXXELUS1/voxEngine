@@ -8,7 +8,7 @@
     voxgen info <file.vxm>
     voxgen render <model.vxm|spec.py> [--styles cubes,bevel,smooth,clay,toon] [--light studio|candle]
                   [--views three_quarter,front,profile,full] [--size 640] [--samples 96] [--bg dark|grey]
-                  [--out build/renders/<name>/] [--save-blend]
+                  [--out build/renders/<name>/] [--cubic-materials 5,8] [--save-blend]
     voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]
 
 Exit code 1 when checks report errors (build, build-all, check) or on failure.
@@ -286,10 +286,25 @@ def _csv(text: str, known, what: str) -> list[str]:
     return items
 
 
+def _material_ids(text: str) -> list[int]:
+    """``"5,8"`` -> [5, 8]; names from ``voxgen.materials`` (``hair``, ``MAT_HAIR``) are accepted too."""
+    ids = []
+    for item in (v.strip() for v in text.split(",") if v.strip()):
+        if item.isdigit():
+            ids.append(int(item))
+        else:
+            name = item.upper() if item.upper().startswith("MAT_") else "MAT_" + item.upper()
+            if not isinstance(getattr(M, name, None), int):
+                raise ValueError(f"unknown material {item!r} in --cubic-materials (use ids like 5,8 or names like hair)")
+            ids.append(getattr(M, name))
+    return ids
+
+
 def cmd_render(args) -> int:
     from .blender.sheet import make_sheet
     styles = _csv(args.styles, STYLES, "styles")
     views = _csv(args.views, list(VIEWS), "views")
+    cubic = _material_ids(args.cubic_materials)
     py = blender_python()
     src = Path(args.model)
     if src.suffix == ".py":
@@ -313,6 +328,8 @@ def cmd_render(args) -> int:
         cmd = [str(py), "-m", "voxgen.blender.render_styles", str(vxm.resolve()), "--style", style,
                "--light", args.light, "--view", view, "--size", str(args.size), "--samples", str(args.samples),
                "--bg", args.bg, "--out", str(png.resolve()), "--index", str(i)]
+        if cubic:
+            cmd += ["--cubic-materials", ",".join(str(v) for v in cubic)]
         if args.save_blend:
             cmd += ["--save-blend", str(png.with_suffix(".blend").resolve())]
         t0 = time.perf_counter()
@@ -402,6 +419,9 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--samples", type=int, default=96, help="Cycles samples (toon/EEVEE uses samples//4)")
     p.add_argument("--bg", default="dark", choices=BACKGROUNDS)
     p.add_argument("--out", default=None, help=f"output dir (default {DEFAULT_RENDERS}/<name>/)")
+    p.add_argument("--cubic-materials", default="",
+                   help="material ids (or names) kept as cubes in smooth/clay/toon, e.g. 5,8 = tooth,hair; "
+                        "default: none, hair and teeth are part of the smooth surface")
     p.add_argument("--save-blend", action="store_true", help="also save a .blend next to each png")
     p.set_defaults(func=cmd_render)
 

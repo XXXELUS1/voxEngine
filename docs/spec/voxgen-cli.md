@@ -40,7 +40,8 @@ voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,c
 voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]   пересобрать контактный лист из рендеров
 ```
 
-Мешеры `voxgen.mesh` (чистый numpy, без Blender): `culled_quads(part, palette, jitter, ao)` и
+Мешеры `voxgen.mesh` (чистый numpy, без Blender): `culled_quads(part, palette, jitter, ao)`,
+`step_edge_weights(mesh, part, mode='steps'|'all', min_run=2)` (веса фасок для `facet`) и
 `surface_nets(part, palette, smooth_passes, keep_cubic_materials=())` → `Mesh` (positions float32 (N,3) в
 метрах local space части, оси Godot; quads int32 (F,4) CCW снаружи; face_colors uint8 (F,4) rgb+ao;
 face_material; corner_ao; face_smooth; vertex_colors для surface nets).

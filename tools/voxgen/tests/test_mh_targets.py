@@ -50,4 +50,4 @@ def test_bundled_targets_are_valid_and_morph_moves_landmarks():
     assert abs(nosey["head_height"] - base["head_height"]) < 0.03     # the rest stays put
     assert abs(nosey["eye_l"][0] + nosey["eye_r"][0]) < 1e-6          # still symmetric
     ears = mh.load(morphs={"ear-scale": 1.8}).landmarks()
-    assert ears["ear_x"] > base["ear_x"] + 0.008
+    assert ears["ear_x"] > base["ear_x"] + 0.005

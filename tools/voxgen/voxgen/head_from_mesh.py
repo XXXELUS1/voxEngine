@@ -15,6 +15,15 @@ Skin tints (colour only): lips with a darker mouth line, eyebrows (inner end thi
 a uniform stubble tint with fine noise (5 o'clock shadow), two-band cheek blush,
 nostrils. Finally the result is mirrored about x = 0 and crumbs are removed.
 
+Caricature: ``HeadParams.morphs`` are MakeHuman modifier weights (:mod:`voxgen.mh_targets`)
+applied to the mesh before everything else, so every landmark (eyes, mouth, ears, chin)
+comes from the morphed mesh. Stylized look (``HeadParams.stylized()``): the form is cleaned
+(3x3x3 closing then opening, thin sheets such as the ears kept) or voxelized ``form_voxel_mult``
+times coarser and upsampled (chunky, deliberate steps) with the details carved on the fine
+grid; flat tints (no per-voxel noise: a disciplined palette of 3 skin tones, 3 hair tones,
+eye white/iris/highlight, lip and one dark line colour), bigger simpler eyes (n x n iris block,
+one highlight, a dark upper-lid line), bold brows, a thin lip band with a mouth line, no blush.
+
 Local space of the part: metres, Y up, face toward -Z, chin at y ~ 0, centred on x/z.
 The hair helper of MakeHuman is a hull around the whole head and face, so the hairline
 is a parameter (``hairline_frac`` of the brow-to-crown distance, ``hairline_up`` on top),
@@ -24,7 +33,7 @@ not the helper's edge.
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
@@ -74,20 +83,54 @@ class HeadParams:
     nostril_radius: float = 0.0035       # 1 voxel at 5 mm, a small cluster at 3 mm
     mirror: bool = True
     seed: int = 7
+    # caricature and the stylized look
+    morphs: dict = field(default_factory=dict)  # MakeHuman modifier -> weight (voxgen.mh_targets); |w| > 1 = caricature
+    form_voxel_mult: int = 1             # voxelize the form this many times coarser and upsample (chunky steps)
+    clean_surface: bool = False          # 3x3x3 closing then opening of the form (thin sheets kept) before layering
+    flat_tints: bool = False             # disciplined palette, no per-voxel colour noise, hair shaded in bands
+    brow_rows: int = 0                   # rows of brow voxels (0 = as many as 5 mm holds)
+    lip_half_height: float = 0.006       # half-height of the lip band
+    lid_line: bool = False               # one dark voxel row along the upper lid
+    iris_voxels: int = 0                 # 0 = disc of iris_radius; n = n x n block with one highlight voxel
+    eye_open_w: float = 0.85             # half-width of the forced lid opening as a fraction of the eyeball radius
+
+    @classmethod
+    def stylized(cls, **overrides) -> "HeadParams":
+        """The stylized cubes look (meant for 3 mm): clean form, flat tints, bigger simpler
+        eyes, bold brows, thin lips, no blush, uniform stubble. Any field can be overridden."""
+        base = dict(clean_surface=True, flat_tints=True, blush=False, brow_rows=2, lip_half_height=0.0035,
+                    lid_line=True, iris_voxels=3, eye_open=0.0065, eye_open_w=0.95, nostril_radius=0.0032)
+        base.update(overrides)
+        return cls(**base)
 
 
-def make_palette() -> Palette:
+# colour names the builder asks for -> palette entries of the stylized (flat) palette
+FLAT_ALIAS = {"skin_dark": "skin_shadow", "skin_ruddy_soft": "skin_ruddy", "stubble": "skin_shadow",
+              "stubble_light": "skin_shadow", "stubble_dark": "skin_shadow", "lip_line": "line",
+              "nostril": "line", "lid_line": "line", "brow": "hair_deep"}
+RICH_ALIAS = {"lid_line": "lip_line", "brow": "hair"}
+
+
+def make_palette(flat: bool = False) -> Palette:
     pal = Palette()
-    pal.add("skin", (222, 178, 150))
-    pal.add("skin_dark", (204, 160, 134))
-    pal.add("skin_ruddy", (226, 166, 144))
-    pal.add("skin_ruddy_soft", (224, 172, 147))
-    pal.add("stubble", (193, 157, 134))       # skin darkened ~12 % and cooled
-    pal.add("stubble_light", (201, 163, 139))
-    pal.add("stubble_dark", (185, 151, 129))
-    pal.add("lips", (210, 151, 131))          # 50 % lip red, 50 % skin
-    pal.add("lip_line", (160, 100, 92))
-    pal.add("nostril", (104, 66, 56))
+    if flat:
+        # palette discipline: 3 skin tones, lip, one dark line (+ 3 hair, eye white/iris/highlight below)
+        pal.add("skin", (230, 184, 152))
+        pal.add("skin_shadow", (198, 156, 140))   # cool shadow tone: stubble
+        pal.add("skin_ruddy", (230, 162, 140))    # blush, when on
+        pal.add("lips", (208, 132, 120))
+        pal.add("line", (110, 62, 58))            # mouth line, upper-lid line, nostrils
+    else:
+        pal.add("skin", (222, 178, 150))
+        pal.add("skin_dark", (204, 160, 134))
+        pal.add("skin_ruddy", (226, 166, 144))
+        pal.add("skin_ruddy_soft", (224, 172, 147))
+        pal.add("stubble", (193, 157, 134))       # skin darkened ~12 % and cooled
+        pal.add("stubble_light", (201, 163, 139))
+        pal.add("stubble_dark", (185, 151, 129))
+        pal.add("lips", (210, 151, 131))          # 50 % lip red, 50 % skin
+        pal.add("lip_line", (160, 100, 92))
+        pal.add("nostril", (104, 66, 56))
     pal.add("fat", (238, 214, 140))
     pal.add("muscle", (150, 40, 45))
     pal.add("bone", (235, 225, 200))
@@ -123,6 +166,70 @@ def depth_map(solid: np.ndarray) -> np.ndarray:
         d += 1
     depth[remaining] = d  # unreachable (never for a connected solid)
     return depth
+
+
+def box_dilate(mask: np.ndarray) -> np.ndarray:
+    """26-connected (3x3x3 box) binary dilation."""
+    out = mask
+    for dx, dy, dz in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+        out = out | shift(out, dx, dy, dz) | shift(out, -dx, -dy, -dz)
+    return out
+
+
+def box_erode(mask: np.ndarray) -> np.ndarray:
+    """3x3x3 box erosion (the grid border counts as solid, so nothing is eaten there)."""
+    return ~box_dilate(~mask)
+
+
+def box_neighbours(mask: np.ndarray) -> np.ndarray:
+    """Number of solid voxels among the 26 neighbours."""
+    n = np.zeros(mask.shape, np.int16)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                if dx or dy or dz:
+                    n += shift(mask, dx, dy, dz)
+    return n
+
+
+def clean_form(solid: np.ndarray, keep_neighbours: int = 12) -> np.ndarray:
+    """Morphological cleanup of the form: 3x3x3 closing (one-voxel pits and notches filled)
+    then opening (one-voxel bumps, ridges and stair-step flicker removed). The opening would
+    also delete every sheet thinner than three voxels (the ears), so voxels of the closed
+    form with at least ``keep_neighbours`` solid 26-neighbours survive it: a two-voxel slab
+    keeps 17, a lone bump on a flat surface has 9."""
+    closed = box_erode(box_dilate(solid))
+    opened = box_dilate(box_erode(closed))
+    return opened | (closed & (box_neighbours(closed) >= keep_neighbours))
+
+
+def upsample(mask: np.ndarray, k: int) -> np.ndarray:
+    """Every voxel becomes a k x k x k block."""
+    return mask.repeat(k, axis=0).repeat(k, axis=1).repeat(k, axis=2)
+
+
+def form_solid(grid: meshvox.VoxelGrid, body, eyes, mult: int, clean: bool) -> tuple[np.ndarray, dict]:
+    """The head solid on ``grid``: body surface + eyeballs voxelized on a grid ``mult`` times
+    coarser, flood-filled from outside (the neck cut is sealed), optionally cleaned
+    (:func:`clean_form`, on the coarse grid), upsampled to ``grid``."""
+    if mult > 1:
+        coarse = meshvox.VoxelGrid(grid.origin, grid.voxel_size * mult, tuple(d // mult for d in grid.dims))
+    else:
+        coarse = grid
+    surf = meshvox.voxelize_surface(body, coarse)
+    for e in eyes:
+        meshvox.voxelize_surface(e, coarse, out=surf)
+    solid, info = meshvox.fill_interior(surf, sealed_faces=("-y",))
+    if info["leak"]:
+        raise RuntimeError(f"mesh voxelization leaked: {info}")
+    info = dict(info, form_voxel_mult=mult)
+    if clean:
+        before = int(solid.sum())
+        solid = clean_form(solid)
+        info["cleaned_delta"] = int(solid.sum()) - before
+    if mult > 1:
+        solid = upsample(solid, mult)
+    return solid, info
 
 
 def hash01(ix: np.ndarray, iy: np.ndarray, iz: np.ndarray, seed: int) -> np.ndarray:
@@ -285,6 +392,27 @@ def nearest_voxel(mask: np.ndarray, X, Y, Z, target) -> tuple | None:
     return (zs[k], ys[k], xs[k])
 
 
+def iris_block(front: np.ndarray, X, Y, centre, n: int) -> tuple[np.ndarray, tuple | None]:
+    """n x n block of exposed eye voxels (in x/y, whatever their z): centred on the opening
+    (its mean column; the row nearest the eye centre), so the gaze is straight even when the
+    lids open more to the temple side; plus the highlight voxel: top row, temple side.
+    Returns (iris mask, highlight index or None)."""
+    zs, ys, xs = np.nonzero(front)
+    out = np.zeros(front.shape, bool)
+    if zs.size == 0:
+        return out, None
+    xc = int(np.round(xs.mean()))
+    k = int(np.argmin(np.abs(Y[zs, ys, xs] - centre[1]) + 1e-3 * np.abs(xs - xc)))
+    yc = int(ys[k])
+    h = n // 2
+    sel = (np.abs(xs - xc) <= h) & (np.abs(ys - yc) <= h)
+    out[zs[sel], ys[sel], xs[sel]] = True
+    side = 1 if centre[0] > 0 else -1
+    score = (ys[sel] == yc + h) * 4 + (xs[sel] == xc + side * h) * 2 + (ys[sel] * 2 + side * xs[sel]) * 1e-3
+    j = int(np.argmax(score))
+    return out, (zs[sel][j], ys[sel][j], xs[sel][j])
+
+
 def mirror_x(part: Part) -> None:
     """Copy the -x half onto the +x half (grid must be x-centred)."""
     nx = part.nx
@@ -314,11 +442,17 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
     p = params or HeadParams()
     vs = float(voxel_size)
     vs_mm = vs * 1000.0
-    human = human or mh.load()
+    human = human or mh.load(morphs=p.morphs)
     lm = human.landmarks()
+    if not (0.17 < lm["head_height"] < 0.40) or lm["head_width"] > 0.35:
+        raise ValueError(f"morphed head out of range (broken target?): {lm['head_height']:.3f} m high, "
+                         f"{lm['head_width']:.3f} m wide")
     body = human.body()
-    pal = make_palette()
-    C = pal.index
+    pal = make_palette(p.flat_tints)
+    alias = FLAT_ALIAS if p.flat_tints else RICH_ALIAS
+
+    def C(name: str) -> int:
+        return pal.index(alias.get(name, name))
 
     # ---- grid (MakeHuman frame: feet at y = 0; the part origin is shifted at the end)
     cut_y = float(lm["neck_base"][1]) - p.neck_keep
@@ -327,8 +461,10 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
     lo = (hv[:, 0].min() - p.margin - hair_room, cut_y, hv[:, 2].min() - p.margin - hair_room)
     hi = (hv[:, 0].max() + p.margin + hair_room, lm["head_top"] + p.margin + hair_room, hv[:, 2].max() + p.margin + hair_room)
     grid = meshvox.VoxelGrid.from_box(lo, hi, vs, centre_x=True)
+    mult = max(1, int(p.form_voxel_mult))
+    dims = tuple(int(math.ceil(d / mult)) * mult for d in grid.dims)   # multiples of mult, x stays centred
     zc = (hv[:, 2].min() + hv[:, 2].max()) * 0.5          # grid centred on the head in z too
-    grid = meshvox.VoxelGrid((grid.origin[0], grid.origin[1], zc - grid.dims[2] * vs / 2), vs, grid.dims)
+    grid = meshvox.VoxelGrid((-dims[0] * vs / 2, grid.origin[1], zc - dims[2] * vs / 2), vs, dims)
     X, Y, Z = grid.centres()
     model = Model(name or f"head_mh_{round(vs_mm)}mm", voxel_size=vs, palette=pal,
                   meta={"source": "makehuman hm08 base.obj (CC0)", "params": asdict(p)})
@@ -338,15 +474,10 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
 
     # ---- solid: body surface + eyeballs, filled from outside (neck cut sealed)
     body_c = meshvox.clip_faces(body, lo=(-INF, cut_y, -INF))
-    body_surf = meshvox.voxelize_surface(body_c, grid)
     eyes = human.helper("l_eye"), human.helper("r_eye")
-    eye_surf = np.zeros(grid.shape, bool)
-    for e in eyes:
-        meshvox.voxelize_surface(e, grid, out=eye_surf)
-    solid, info = meshvox.fill_interior(body_surf | eye_surf, sealed_faces=("-y",))
+    body_surf = meshvox.voxelize_surface(body_c, grid)       # the fine skin shell (eye masking only)
+    solid, info = form_solid(grid, body_c, eyes, mult, p.clean_surface)
     model.meta["fill"] = info
-    if info["leak"]:
-        raise RuntimeError(f"mesh voxelization leaked: {info}")
 
     # ---- tissues by depth
     depth = depth_map(solid)
@@ -407,41 +538,56 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
     for e in eyes:
         s, _ = meshvox.fill_interior(meshvox.voxelize_surface(e, grid))
         eye_solid |= s
-    eye = eye_solid & ~body_surf
+    eye = eye_solid & ~body_surf & solid
     if p.eye_open > 0:
         for ec in (lm["eye_l"], lm["eye_r"]):
-            eye |= lid_opening(mat != M.MAT_AIR, eye_solid, X, Y, Z, ec, lm["eye_radius"] * 0.85, p.eye_open)
+            eye |= lid_opening(mat != M.MAT_AIR, eye_solid, X, Y, Z, ec, lm["eye_radius"] * p.eye_open_w, p.eye_open,
+                               reach=3 if p.iris_voxels else 2)
     mat[eye] = M.MAT_EYE
     col[eye] = C("eye_white")
     exposed_all = exposed(mat != M.MAT_AIR)
+    skin_ex = (mat == M.MAT_SKIN) & exposed_all
     for ec in (lm["eye_l"], lm["eye_r"]):
-        front = eye & exposed_all & (Z < ec[2])
-        r2 = (X - ec[0]) ** 2 + (Y - ec[1]) ** 2
-        iris = front & (r2 <= p.iris_radius ** 2)
+        front = eye & exposed_all & (Z < ec[2]) & (np.abs(X - ec[0]) < 0.02)   # this eye's opening
+        if p.iris_voxels > 0:
+            iris, hl = iris_block(front, X, Y, ec, p.iris_voxels)
+        else:
+            r2 = (X - ec[0]) ** 2 + (Y - ec[1]) ** 2
+            iris = front & (r2 <= p.iris_radius ** 2)
+            zs, ys, xs = np.nonzero(iris)
+            hl = None
+            if zs.size:
+                k = int(np.argmax(Y[zs, ys, xs] * 2 + np.abs(X[zs, ys, xs])))  # upper, toward the temple
+                hl = (zs[k], ys[k], xs[k])
         col[iris] = C("iris")
-        zs, ys, xs = np.nonzero(iris)
-        if zs.size:
-            k = int(np.argmax(Y[zs, ys, xs] * 2 + np.abs(X[zs, ys, xs])))  # upper, toward the temple
-            col[zs[k], ys[k], xs[k]] = C("highlight")
+        if hl is not None:
+            col[hl] = C("highlight")
+        if p.lid_line:
+            # the exposed skin row right above the opening (the surface recedes under the
+            # brow, so look a few voxels back and forth in z), one smooth row per column
+            top = front & ~shift(eye, 0, -1, 0)
+            above = np.zeros(top.shape, bool)
+            for dz in range(-3, 4):
+                above |= shift(top, 0, 1, dz)
+            col[pick_front_row(skin_ex & above, Z, 1)] = C("lid_line")
 
     # ---- skin tints (colour only) on the exposed skin, before the hair hides the scalp
-    skin_ex = (mat == M.MAT_SKIN) & exposed_all
     mouth_y = float(lm["mouth"][1])
     if p.eyebrows:
         band = skin_ex & (Y >= lm["eye_y"] + 0.012 - vs * 0.5) & (Y <= lm["eye_y"] + 0.018 + vs * 0.5) \
             & (np.abs(X) >= lm["eye_x"] - 0.017) & (np.abs(X) <= lm["eye_x"] + 0.021)
         if band.any():
             band &= Z <= Z[band].min() + 0.02
-            rows = max(1, int(round(0.005 / vs)))
+            rows = p.brow_rows or max(1, int(round(0.005 / vs)))
             brow = pick_front_row(band, Z, rows)
             # the head of the brow (inner third) is one voxel thicker, downward; the
             # surface recedes under the brow ridge, so look for exposed skin a little back
             inner = brow & (np.abs(X) <= lm["eye_x"] - 0.009)
             under = skin_ex & ~brow & (shift(inner, 0, -1, 0) | shift(inner, 0, -1, 1) | shift(inner, 0, -1, 2))
             brow |= pick_front_row(under, Z, 1)
-            col[brow] = C("hair")
+            col[brow] = C("brow")
     if p.lips:
-        lips = skin_ex & (np.abs(Y - mouth_y) <= 0.006) & (np.abs(X) <= lm["mouth_half_width"] - 0.004)
+        lips = skin_ex & (np.abs(Y - mouth_y) <= p.lip_half_height) & (np.abs(X) <= lm["mouth_half_width"] - 0.004)
         if lips.any():
             lips &= Z <= Z[lips].min() + 0.016
             col[lips] = C("lips")
@@ -472,10 +618,16 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
         cheeks = (Y >= mouth_y - 0.006) & (Y <= cheek_top) & (np.abs(X) >= lm["mouth_half_width"] + 0.008)
         zone = skin_ex & (Z <= lm["ear_centre"][2]) & (jaw | lip_top | cheeks) & ~lips_band
         zone &= ~((np.abs(X) < 0.018) & (Y > lm["nose_base_y"] - 0.004))
-        iz, iy, ixx = np.indices(grid.shape)
-        r = hash01(np.abs(ixx - grid.dims[0] / 2 + 0.5).astype(np.int64), iy, iz, p.seed)
-        shade = np.where(r < 0.3, C("stubble_light"), np.where(r < 0.6, C("stubble_dark"), C("stubble"))).astype(np.uint8)
-        col[zone] = shade[zone]
+        if p.flat_tints:
+            # a flat tint shows its edges: stop just under the chin and in front of the ear
+            zone &= (Y >= chin_y - 0.012) & (Z <= ear_z0 - 0.004)
+        if p.flat_tints:
+            col[zone] = C("stubble")
+        else:
+            iz, iy, ixx = np.indices(grid.shape)
+            r = hash01(np.abs(ixx - grid.dims[0] / 2 + 0.5).astype(np.int64), iy, iz, p.seed)
+            shade = np.where(r < 0.3, C("stubble_light"), np.where(r < 0.6, C("stubble_dark"), C("stubble"))).astype(np.uint8)
+            col[zone] = shade[zone]
     if p.nostrils:
         for sx in (-1, 1):
             target = (sx * 0.009, lm["nose_base_y"], lm["nose_tip"][2] + 0.012)
@@ -483,6 +635,8 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
             if idx is not None:
                 c = (X[idx], Y[idx], Z[idx])
                 near = skin_ex & ((X - c[0]) ** 2 + (Y - c[1]) ** 2 + (Z - c[2]) ** 2 <= p.nostril_radius ** 2)
+                if p.flat_tints:
+                    near &= np.abs(Y - c[1]) < vs * 0.5                 # one row: a short dark dash
                 col[near] = C("nostril")
 
     # ---- hair cap (solid), 3 shades
@@ -490,14 +644,26 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
         hair = hair_cap(grid, mat != M.MAT_AIR, lm, p)
         hair &= Y > cut_y
         mat[hair] = M.MAT_HAIR
-        iz, iy, ixx = np.indices(grid.shape)
-        r = hash01(np.abs(ixx - grid.dims[0] / 2 + 0.5).astype(np.int64), iy, iz, p.seed + 1)
-        top = smoothstep(lm["ear_y"][1], lm["head_top"] - 0.01, Y)     # lighter toward the crown
-        p_light = 0.12 + 0.30 * top
-        p_deep = 0.32 - 0.20 * top
-        shade = np.where(r < p_light, C("hair_light"),
-                         np.where(r < p_light + p_deep, C("hair_deep"), C("hair"))).astype(np.uint8)
-        col[hair] = shade[hair]
+        if p.flat_tints:
+            # painted bands instead of speckle: the top-lit steps of the crown are light (only
+            # there: on every terrace it reads as a contour map), the lower edge (sideburns,
+            # nape) and the under-faces are deep
+            filled = mat != M.MAT_AIR
+            up_lit = hair & ~shift(filled, 0, -1, 0) & (Y > lm["head_top"] - 0.022)
+            floor = hair_floor(X, Z, lm, p)
+            deep = hair & ((Y < floor + p.hair_taper * 0.6) | ~shift(filled, 0, 1, 0))
+            col[hair] = C("hair")
+            col[deep] = C("hair_deep")
+            col[up_lit] = C("hair_light")
+        else:
+            iz, iy, ixx = np.indices(grid.shape)
+            r = hash01(np.abs(ixx - grid.dims[0] / 2 + 0.5).astype(np.int64), iy, iz, p.seed + 1)
+            top = smoothstep(lm["ear_y"][1], lm["head_top"] - 0.01, Y)     # lighter toward the crown
+            p_light = 0.12 + 0.30 * top
+            p_deep = 0.32 - 0.20 * top
+            shade = np.where(r < p_light, C("hair_light"),
+                             np.where(r < p_light + p_deep, C("hair_deep"), C("hair"))).astype(np.uint8)
+            col[hair] = shade[hair]
 
     part.material[:] = mat
     part.color[:] = col
@@ -511,6 +677,7 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
     if p.mirror:
         mirror_x(part)
     model.meta["crumbs_removed"] = keep_largest_component(part)
+    model.meta["morphs"] = dict(p.morphs)
 
     # ---- local frame: chin at y ~ 0, centred on x/z
     part.origin = (grid.origin[0], grid.origin[1] - float(lm["chin"][1]), -grid.dims[2] * vs / 2)

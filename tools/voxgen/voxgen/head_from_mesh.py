@@ -7,10 +7,10 @@ and the tissues are assigned by depth: skin (>= 5 mm), fat (~4 mm, thicker on th
 cheeks), muscle, bone where the depth exceeds 9 mm above the brow line and 16 mm
 below it (neck: only the back half = spine). Teeth come from the tooth-row helpers,
 eyes from the eyeball helpers (iris + one highlight on the exposed front), ear and
-nose cores are cartilage. Hair is a solid cap: the scalp patch of the body mesh is
-swept outward along its normals by ``hair_thickness`` and filled down to the skin, then
-cut in voxel space at a smooth lower edge (``hair_floor``: forehead hairline -> sideburn
-to mid-ear -> nape at mouth level), thinned toward that edge, closed and de-spiked.
+nose cores are cartilage. Hair is a solid cap: the air within ``hair_thickness``
+(Euclidean distance) of the skin, cut at a smooth lower edge (``hair_floor``: forehead
+hairline -> sideburn to mid-ear -> nape at mouth level), thinned toward that edge,
+trimmed around the ears, closed and de-spiked.
 Skin tints (colour only): lips with a darker mouth line, eyebrows (inner end thicker),
 a uniform stubble tint with fine noise (5 o'clock shadow), two-band cheek blush,
 nostrils. Finally the result is mirrored about x = 0 and crumbs are removed.
@@ -33,7 +33,6 @@ from . import meshvox, mh
 from .body import dilate, erode, exposed, neighbour_count, shift
 from .checks import label_components
 from .model import Model, Part
-from .objmesh import ObjMesh
 from .palette import Palette
 
 INF = float("inf")
@@ -60,7 +59,8 @@ class HeadParams:
     hairline_up: float = 0.0             # raise (+) / lower (-) the front hairline on top of that
     hair_taper: float = 0.015            # length over which the cap thins toward its lower edge
     hair_edge: float = 0.6               # thickness fraction at the edge (1 = blunt)
-    temple_recess: float = 0.005         # how much higher the hairline sits at the temples
+    nape_taper: float = 0.05             # the back thins over this length up from the nape (tapered neckline)
+    temple_recess: float = 0.0           # how much higher the hairline sits at the temples
     sideburn_below_ear_top: float = 0.02 # sideburns end this far below the ear top (mid-ear)
     nape_up: float = 0.0                 # nape hairline relative to the mouth level
     ear_trim: float = 0.006              # hair above the ear is trimmed to this far out of the ear root
@@ -160,31 +160,28 @@ def hair_floor(x: np.ndarray, z: np.ndarray, lm: dict, p: HeadParams) -> np.ndar
     return floor * (1.0 - t_back) + nape * t_back
 
 
-def scalp_vertex_mask(v: np.ndarray, lm: dict, p: HeadParams) -> np.ndarray:
-    """Body vertices whose faces are swept into the hair hull: everything from a little
-    below the hair floor up (the exact edge is cut in voxel space by ``hair_cap``)."""
-    return v[:, 1] >= hair_floor(v[:, 0], v[:, 2], lm, p) - 0.02
+def air_distance(solid: np.ndarray, radius: float) -> np.ndarray:
+    """Euclidean distance (in voxels) from every air voxel to the nearest exposed solid
+    voxel centre, up to ``radius`` (inf beyond, 0 inside the solid). Brute force over
+    the ball of offsets, nearest first (~260 shifts at radius 4), no scipy."""
+    surf = exposed(solid)
+    dist = np.full(solid.shape, np.inf, np.float32)
+    r = int(math.ceil(radius))
+    offs = [((dx, dy, dz), math.sqrt(dx * dx + dy * dy + dz * dz))
+            for dx in range(-r, r + 1) for dy in range(-r, r + 1) for dz in range(-r, r + 1)]
+    offs = sorted((o for o in offs if 0 < o[1] <= radius), key=lambda o: o[1])
+    for (dx, dy, dz), d in offs:
+        m = shift(surf, dx, dy, dz) & np.isinf(dist)
+        dist[m] = d
+    dist[solid] = 0.0
+    return dist
 
 
-def hair_cap(body: ObjMesh, grid: meshvox.VoxelGrid, solid: np.ndarray, lm: dict, p: HeadParams) -> np.ndarray:
-    """Solid hair cap: the scalp patch swept outward along its normals by
-    ``hair_thickness`` and filled down to the skin; cut at the smooth ``hair_floor``,
-    thinned to ``hair_edge`` of the thickness over ``hair_taper`` above that edge,
-    trimmed around the ears; closed (dilate + erode) and de-spiked."""
-    v = body.vertices
-    ok = scalp_vertex_mask(v, lm, p)
-    keep = ok[body.faces].all(axis=1)
-    if not keep.any():
-        return np.zeros(grid.shape, bool)
-    faces = body.faces[keep]
-    vn = body.vertex_normals()
-    out = np.zeros(grid.shape, bool)
-    step = 0.5 * grid.voxel_size
-    t_from, t_to = -0.006, p.hair_thickness
-    n = max(1, int(math.ceil((t_to - t_from) / step)))
-    for i in range(n + 1):
-        t = t_from + (t_to - t_from) * i / n
-        meshvox.voxelize_surface((v + vn * t)[faces], grid, out=out)
+def hair_cap(grid: meshvox.VoxelGrid, solid: np.ndarray, lm: dict, p: HeadParams) -> np.ndarray:
+    """Solid hair cap: the air within ``hair_thickness`` (Euclidean, so the outer surface
+    is smooth, not a Manhattan checkerboard) of the skin, cut at the smooth
+    ``hair_floor``, thinned to ``hair_edge`` of the thickness over ``hair_taper`` above
+    that edge, trimmed around the ears; closed (dilate + erode) and de-spiked."""
     X, Y, Z = grid.centres()
     floor = hair_floor(X, Z, lm, p)
     ear_z0, ear_z1 = lm["ear_z"]
@@ -192,12 +189,12 @@ def hair_cap(body: ObjMesh, grid: meshvox.VoxelGrid, solid: np.ndarray, lm: dict
     ear_zone = (np.abs(X) > lm["ear_inner_x"] - 0.004) & (Y < ear_y1 + 0.004) & (Z > ear_z0 - 0.008) & (Z < ear_z1 + 0.008)
     # above the ear the cap hugs the skull instead of hanging over the ear
     ear_zone |= (np.abs(X) > lm["ear_inner_x"] + p.ear_trim) & (Y < ear_y1 + 0.014) & (Z > ear_z0 - 0.012) & (Z < ear_z1 + 0.012)
-    hair = out & ~solid & (Y >= floor) & ~ear_zone
-    # taper: ``hair_edge`` of the thickness at the edge, the full thickness ``hair_taper`` above it
     k = p.hair_thickness / grid.voxel_size
-    w = p.hair_edge + (1.0 - p.hair_edge) * np.clip((Y - floor) / max(p.hair_taper, 1e-6), 0.0, 1.0)
-    height = depth_map(~solid)                      # air: 6-connected distance from the skin
-    hair &= height <= k * w + 0.5
+    t_back = smoothstep(ear_z1, ear_z1 + 0.035, Z)
+    taper = p.hair_taper * (1.0 - t_back) + p.nape_taper * t_back
+    w = p.hair_edge + (1.0 - p.hair_edge) * np.clip((Y - floor) / np.maximum(taper, 1e-6), 0.0, 1.0)
+    dist = air_distance(solid, k + 0.5)
+    hair = ~solid & (dist <= k * w + 0.5) & (Y >= floor) & ~ear_zone
     # closing fills one-voxel notches of the outline; then spikes off, pits filled
     hair = erode(dilate(hair | solid)) & ~solid & ~ear_zone & (Y >= floor - grid.voxel_size)
     return smooth_cap(hair, solid)
@@ -439,7 +436,7 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
             brow = pick_front_row(band, Z, rows)
             # the head of the brow (inner third) is one voxel thicker, downward; the
             # surface recedes under the brow ridge, so look for exposed skin a little back
-            inner = brow & (np.abs(X) <= lm["eye_x"] - 0.004)
+            inner = brow & (np.abs(X) <= lm["eye_x"] - 0.009)
             under = skin_ex & ~brow & (shift(inner, 0, -1, 0) | shift(inner, 0, -1, 1) | shift(inner, 0, -1, 2))
             brow |= pick_front_row(under, Z, 1)
             col[brow] = C("hair")
@@ -464,7 +461,7 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
         chin_y, chin_z = float(lm["chin"][1]), float(lm["chin"][2])
         ear_z0 = lm["ear_z"][0]
         sideburn = lm["ear_y"][1] - p.sideburn_below_ear_top
-        lips_band = (np.abs(Y - mouth_y) <= 0.006) & (np.abs(X) <= lm["mouth_half_width"] + 0.002)
+        lips_band = (np.abs(Y - mouth_y) <= 0.006) & (np.abs(X) <= lm["mouth_half_width"] + 0.008)
         jaw = (Y < mouth_y + 0.006) & (Y >= cut_y + 0.02)
         jaw &= (Y >= chin_y - 0.008) | ((Y >= chin_y - 0.018) & (Z <= chin_z + 0.03))
         lip_top = (Y >= mouth_y + 0.006 - vs * 0.5) & (Y <= lm["nose_base_y"] - 0.002) \
@@ -472,7 +469,7 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
         t = smoothstep(float(lm["mouth"][2]), ear_z0 - 0.005, Z)
         cheek_top = (mouth_y + 0.004) * (1.0 - t) + (sideburn - 0.006) * t
         cheek_top = np.minimum(cheek_top, lm["eye_y"] - 0.038 + 0.018 * smoothstep(-0.10, ear_z0, Z))
-        cheeks = (Y >= mouth_y - 0.006) & (Y <= cheek_top) & (np.abs(X) >= lm["mouth_half_width"] + 0.004)
+        cheeks = (Y >= mouth_y - 0.006) & (Y <= cheek_top) & (np.abs(X) >= lm["mouth_half_width"] + 0.008)
         zone = skin_ex & (Z <= lm["ear_centre"][2]) & (jaw | lip_top | cheeks) & ~lips_band
         zone &= ~((np.abs(X) < 0.018) & (Y > lm["nose_base_y"] - 0.004))
         iz, iy, ixx = np.indices(grid.shape)
@@ -490,7 +487,7 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
 
     # ---- hair cap (solid), 3 shades
     if p.hair:
-        hair = hair_cap(body_c, grid, mat != M.MAT_AIR, lm, p)
+        hair = hair_cap(grid, mat != M.MAT_AIR, lm, p)
         hair &= Y > cut_y
         mat[hair] = M.MAT_HAIR
         iz, iy, ixx = np.indices(grid.shape)

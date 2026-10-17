@@ -62,10 +62,14 @@ def _smin(a, b, k):
 
 DEFAULT = dict(
     cranium=dict(centre=(0.0, 11.5, 7.3), semi=(7.3, 7.6, 7.7), exps=(3.5, 2.4, 2.6)),   # fitted to the sheet rows 0..7
-    # jaw half-width by y (u): the taper from the chin to the cheekbones (front view rows 18..13)
-    jaw_width=[(0.0, 4.95), (0.5, 4.95), (1.5, 5.6), (2.5, 6.0), (3.5, 6.6), (4.5, 6.8), (6.5, 7.1), (9.0, 7.25)],
+    # the lower face in plan: a narrow front plane (the eyes / mouth / chin) that widens at 45-ish
+    # degrees toward the sides over ``jaw_flare`` u of depth (the faceted cheek of the sheet's 3/4
+    # views); half-widths by y (u): front plane and sides (the mandible seen from the front)
+    jaw_front=[(0.0, 2.5), (1.0, 3.0), (2.5, 3.8), (4.5, 4.5), (6.5, 4.8), (9.0, 4.9)],
+    jaw_side=[(0.0, 4.9), (1.0, 5.2), (2.5, 6.0), (4.5, 6.8), (6.5, 7.1), (9.0, 7.3)],
+    jaw_flare=4.0,
     jaw_back=[(0.0, 13.0), (3.0, 13.0), (8.0, 15.0)],     # z of the jaw block's back by y: flat underside, no arc
-    jaw_round=1.5, jaw_top=9.0, blend=1.2,
+    jaw_top=9.0, blend=1.2,
     nose=dict(bridge_y=10.0, tip_y=6.5, base_y=5.5, tip_z=-1.3, bridge_hw=0.9, base_hw=1.6),
     neck=dict(hx=3.9, z=(5.5, 13.0), y=(-5.0, 1.5), round=1.5),
 )
@@ -78,11 +82,16 @@ def head_inside(x, y, z, p=DEFAULT) -> np.ndarray:
     ex, ey, ez = p["cranium"]["exps"]
     s = (np.abs(x - cx) / a) ** ex + (np.abs(y - cy) / b) ** ey + (np.abs(z - cz) / c) ** ez
     d_cranium = (np.cbrt(s) - 1.0) * 5.0                     # distance-like near the surface
-    # jaw block: tapered in x, flat bottom at y 0, rounded vertical edges, back by y
-    hw = _lerp_table(y, p["jaw_width"])
+    # jaw block: a narrow front plane flaring to the sides over jaw_flare u of depth, flat bottom
+    # at y 0 (no arc into the neck), back by y; the back corners rounded by 1.5 u
+    wf = _lerp_table(y, p["jaw_front"])
+    ws = _lerp_table(y, p["jaw_side"])
+    hw = wf + (ws - wf) * np.clip(z / p["jaw_flare"], 0, 1)
     zb = _lerp_table(y, p["jaw_back"])
-    zc, hz = zb / 2, zb / 2
-    d_xz = _rounded_rect(x, z - zc, hw, hz, p["jaw_round"])
+    d_x = np.abs(x) - hw
+    d_z = np.maximum(-z, z - zb)
+    back_corner = np.sqrt(np.maximum(np.abs(x) - (ws - 1.5), 0) ** 2 + np.maximum(z - (zb - 1.5), 0) ** 2) - 1.5
+    d_xz = np.maximum(np.maximum(d_x, d_z), back_corner)
     d_y = np.maximum(-y, y - p["jaw_top"])
     d_jaw = np.maximum(d_xz, d_y)
     d = _smin(d_cranium, d_jaw, p["blend"])
@@ -118,7 +127,7 @@ def layer_extent(layer: dict):
     a, b, c = p["cranium"]["semi"]
     cx, cy, cz = p["cranium"]["centre"]
     q = p["neck"]
-    x1 = max(a, max(w for _, w in p["jaw_width"]), q["hx"]) * U_PER_u
+    x1 = max(a, max(w for _, w in p["jaw_side"]), q["hx"]) * U_PER_u
     y0 = min(q["y"][0], 0.0) * U_PER_u
     y1 = (cy + b) * U_PER_u
     z0 = min(cz - c, p["nose"]["tip_z"]) * U_PER_u

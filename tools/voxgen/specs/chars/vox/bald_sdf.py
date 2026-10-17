@@ -15,7 +15,7 @@ _maps.loader.exec_module(maps)
 # features in map units U (1 u of the reference = 0.75 U): ears 1.5 u proud, 4 u tall, 3.5 u deep,
 # at mid-depth; the mouth slit at y 4 u, 6 u wide; nostrils under the nose tip
 SKULL = dict(view="sdf", material="MAT_SKIN", colour="skin",
-             features=dict(ears=(5.5, 6.5, 5.0, 8.0, 5.25, 7.75), notches=(6.0, 6.5, 5.75, 7.25, 6.0, 7.0),
+             features=dict(ears=(5.5, 6.25, 5.0, 7.75, 5.25, 7.75), notches=(5.75, 6.25, 5.75, 7.25, 6.25, 7.0),
                            cavity_x=(-2.25, 2.25), cavity_y=(2.75, 3.25), lip_slit_y=3.0,
                            nostril=(0.25, 0.75, 4.0, 4.25, -1.0, -0.5)))
 
@@ -38,7 +38,7 @@ FACE = dict(
         "......KKKKKKKKK.......",
         "......WWWPPPWWW.......",
         "......WWWPPPWWW.......",
-        "......................",
+        "......WWWPPPWWW.......",
         "......................",
         "......................",
         "......................",

@@ -10,15 +10,25 @@ everything on integer grids and never samples a mesh or an SDF with sub-voxel no
 
 Grids
 -----
-* Head: a coarse design grid of ``coarse`` metres (15 mm) upsampled x5 (nearest) to the fine
-  ``coarse / 5`` grid (3 mm): the form (skull, nose block, ear blocks, neck) and the hair slabs
-  are whole coarse cells; the features (eyes, brows, mouth, cheek tint, nose softening) are
-  placed on coarse coordinates but drawn on the fine grid, so lines can be 1-2 fine voxels.
-  Head frame: chin's bottom at y = 0, face toward -Z, centred on x / z (the skull box's centre).
-  Coarse layout (cells; x mirrored about the centre column 0, y rows up from the chin, z depth
-  from the face plane): skull x [-5, 5] y [0, 10] z [0, 10] rounded by one cell (the edge cells
-  cut: a 45-degree chamfer), nose x 0 y [2, 3] one cell proud, eyes x +-[2, 3] y [4, 6] (row 6 =
-  the highlight band), brows row 7, mouth row 1, ears x +-6 y [4, 5] z [4, 5], neck y [-2, -1].
+* Head: a coarse design grid of ``coarse`` metres (15 mm) for the proportions, drawn on the fine
+  ``coarse / 5`` grid (3 mm) in the *skull frame* (``Frame``): x 0..44 (the centre column 22),
+  y 0..54 (the chin's bottom row 0), z 0..49 (the face plane 0, the face toward -z). The skull is
+  a box whose every edge is a 45-degree staircase of fine voxels (3 at the front vertical edges,
+  4 on the top / chin edges, 8 on the top-back, corner facets) and whose jaw steps in 4 voxels
+  per side under the ear line: rounded, never terraced. The face stays one flat plane: eyes are
+  white 10x8 blocks (two coarse cells) with the dark lid rows on top, a 4x4 pupil under the lid
+  and one gleam; brows are bars 16 wide, 3 or 5 rows, two voxels proud (hair material); the nose
+  is two blocks (a 9x8 tip five voxels proud with softened front edges, a 5x6 bridge two proud);
+  the mouth an 11x2 line with the corners a voxel up and a row of eight 2x2x2 teeth behind it;
+  cheeks two warm tones in an ellipse with a dithered rim; ears 4x10x10 blocks with a 6x6 notch
+  two deep. Hair is a shell 4 voxels thick on the skull (``chunky``: sparse 5x5 clumps two proud
+  in the lighter tone; ``slabs``: two octagonal slabs and a quiff on the swept side with groove
+  lines along the sweep), the hairline and nape ragged in 5-column steps, the temples bare, the
+  sides to mid-ear. The beard is the jaw zone (the cheek line rising to the ear, a ragged top
+  edge) grown 4 voxels (``short``) or 6 (``full``) with sparse clumps, the moustache a bar under
+  the nose with the ends hanging past the mouth corners; stubble is a two-tone dot pattern. The
+  beret is a slouching stack of octagonal slabs on a dark band with sparse crumples on top, the
+  feather a separate part: a staircase of white blocks with barbs, its quill buried in the puff.
 * Body: designed directly in 10 mm voxels (``body_voxel``), proportions of a 7.2-head adult:
   feet / shoes, shins, thighs, a torso box, shoulder joints, upper arms, forearms, hands (thin
   blocks with the thumb block proud at the front: the notch under it), a neck. Body frame: feet
@@ -29,18 +39,22 @@ Grids
   outer voxel layer turned MAT_CLOTH with the skin kept underneath; shoes are MAT_LEATHER blocks.
 
 Interior (both parts): depth from the air by 6-connected peeling -> skin, fat, muscle, bone
-(nose and ears: cartilage below the skin; the eyes MAT_EYE two fine voxels deep), so the engine
-can cut, and the checks stay clean (no exposed fat, one component per part, mirror symmetry).
+(nose and ears: cartilage below the skin; the eyes MAT_EYE two fine voxels deep; the teeth sit
+in the fat band behind the mouth line), so the engine can cut, and the checks stay clean (no
+exposed fat, one component per part, mirror symmetry).
 
-Palette discipline: three skin tones (base, shadow, cheek), two hair tones (base, lighter top
-slab), two or three flat tones per garment, eye dark + eye light, one line colour. Everything
-is mirror-symmetric except the optional hair fringe sweep.
+Palette discipline: three skin tones (base, shadow, cheek) plus the cheek's half tone and two
+stubble tones, two hair tones (base, lighter clumps / top slabs), two or three flat tones per
+garment, eye white + lid + pupil + gleam, one mouth tone. Everything is mirror-symmetric except
+the slab hair's sweep and the beret with its feather. Every pattern (ragged edges, clumps,
+crumples) is a fixed arithmetic rule on the voxel index, never a random number.
 
 Decisions (the specs are silent on a designed character): the metre scale follows the head's
 coarse cell (15 mm -> skull 165 mm, character ~1.2 m; ``coarse=0.02`` gives a 1.6 m adult with
-the same look); brows are MAT_HAIR flush with the face (shaveable); stubble is a flat tint;
-the full beard is a one-cell block in front of the lower face (MAT_HAIR); hats are separate
-parts (straw = MAT_PLANT, cap = MAT_CLOTH) and the hair under them keeps only its lower slabs.
+the same look); brows are hair material two voxels proud (shaveable); hats are separate parts
+(straw = MAT_PLANT, beret / cap = MAT_CLOTH, the feather MAT_PLANT) and the hair under them
+keeps its lower shell; a hat and the feather must touch what they sit on; the hair never enters
+the ear notch.
 """
 
 from __future__ import annotations
@@ -61,23 +75,25 @@ COARSE = 0.015
 #: body voxel (m): the body is designed directly on this grid
 BODY_VOXEL = 0.01
 
-HAIR_STYLES = ("slabs", "short", "bald")
+HAIR_STYLES = ("slabs", "chunky", "short", "bald")
 BEARDS = ("none", "stubble", "short", "full")
-HATS = ("none", "straw", "cap")
+HATS = ("none", "beret", "straw", "cap")
 OUTFITS = ("coat", "tunic", "apron", "dress")
 SLEEVES = ("long", "rolled")
 
 #: skin_tone -> (base, shadow, cheek)
 SKIN_TONES = {
-    "light": ((228, 184, 150), (196, 148, 118), (236, 178, 156)),
+    "light": ((228, 184, 150), (196, 148, 118), (234, 172, 148)),
     "pale": ((240, 212, 192), (204, 170, 154), (242, 190, 178)),
     "tan": ((206, 158, 118), (164, 116, 86), (216, 142, 116)),
     "old": ((222, 192, 166), (184, 150, 126), (226, 180, 162)),
     "dark": ((128, 86, 62), (92, 58, 42), (142, 92, 74)),
+    "warm": ((230, 166, 112), (184, 120, 76), (226, 150, 104)),
 }
 #: hair_tone -> (base, light)
 HAIR_TONES = {
     "brown": ((88, 58, 40), (128, 90, 62)),
+    "chestnut": ((76, 44, 26), (122, 74, 42)),
     "black": ((36, 32, 36), (66, 62, 70)),
     "blond": ((190, 150, 88), (222, 190, 124)),
     "red": ((150, 72, 36), (190, 108, 60)),
@@ -86,8 +102,13 @@ HAIR_TONES = {
 #: fixed tones shared by every character
 COMMON_TONES = {
     "line": (70, 46, 40),
-    "eye_dark": (38, 32, 36),
-    "eye_light": (128, 142, 162),
+    "mouth": (112, 66, 52),
+    "eye_lid": (30, 20, 20),
+    "eye_white": (236, 226, 212),
+    "eye_dark": (46, 30, 26),
+    "eye_light": (150, 128, 120),
+    "feather": (238, 226, 200),
+    "feather_shade": (200, 180, 146),
     "tooth": (244, 240, 224),
     "fat": (238, 214, 140),
     "muscle": (150, 40, 45),
@@ -108,6 +129,7 @@ COMMON_GARMENT_TONES = {
     "shoe": (236, 234, 230), "sole": (186, 182, 176),
     "straw": (222, 178, 76), "straw_band": (132, 92, 44),
     "cap": (74, 92, 120), "cap_shade": (54, 68, 92),
+    "beret": (140, 36, 26), "beret_shade": (96, 22, 18), "beret_light": (170, 54, 40),
 }
 
 
@@ -116,11 +138,12 @@ class VoxCharParams:
     name: str = "voxchar"
     skin_tone: str = "light"
     hair_tone: str = "brown"
-    hair: str = "slabs"            # slabs | short | bald
-    fringe_sweep: int = 0          # -1 / +1: a third top slab on that side of the hair (the character's x sign; +x is the viewer's left)
+    hair: str = "slabs"            # slabs | chunky | short | bald
+    fringe_sweep: int = 0          # -1 / +1: the slabs' quiff and third slab on that side (the character's x sign; +x is the viewer's left)
     beard: str = "none"            # none | stubble | short | full
-    brows_thick: bool = False
-    hat: str = "none"              # none | straw | cap
+    mustache: bool = False         # a moustache block under the nose (part of the beard part)
+    brows_thick: bool = False      # 5 fine rows instead of 3
+    hat: str = "none"              # none | beret (with the feather part) | straw | cap
     outfit: str = "coat"           # coat | tunic | apron | dress
     sleeves: str = "long"          # long | rolled (forearms bare; coat sleeves are always long)
     coarse: float = COARSE         # head design cell (m); fine voxel = coarse / UP
@@ -259,7 +282,9 @@ def make_palette(p: VoxCharParams) -> Palette:
     base, shadow, cheek = SKIN_TONES[p.skin_tone]
     hair, hair_light = HAIR_TONES[p.hair_tone]
     tones = {"skin": base, "skin_shadow": shadow, "skin_cheek": cheek,
-             "stubble": tuple(int(round(c * f)) for c, f in zip(base, (0.84, 0.84, 0.88))),
+             "skin_cheek_soft": tuple((a + b) // 2 for a, b in zip(base, cheek)),
+             "stubble": tuple(int(round(c * f)) for c, f in zip(base, (0.80, 0.80, 0.86))),
+             "stubble_soft": tuple(int(round(c * f)) for c, f in zip(base, (0.90, 0.90, 0.93))),
              "hair": hair, "hair_light": hair_light}
     tones.update(COMMON_TONES)
     tones.update(GARMENT_TONES[p.outfit])
@@ -272,193 +297,320 @@ def make_palette(p: VoxCharParams) -> Palette:
 
 
 # ---------------------------------------------------------------------------- head
-#: coarse skull extent (cells)
-SKULL_X, SKULL_Y, SKULL_Z = 5, 10, 10
+#: array index of skull-frame 0 on x, y, z; the array's shape (nz, ny, nx)
+FX, FY, FZ = 20, 10, 14
+HEAD_SHAPE = (82, 110, 85)
+#: skull box in the skull frame: x 0..2*HW, y 0..TOP (the chin's bottom at 0), z 0..BACK (the face plane at 0)
+HW, TOP, BACK = 22, 54, 49
 #: head tissue bands in fine voxels of depth
 HEAD_BANDS = [(M.MAT_SKIN, 2), (M.MAT_FAT, 2), (M.MAT_MUSCLE, 3), (M.MAT_BONE, None)]
+#: eye block (fine): x of the right eye, rows; the pupil inside it; the lid rows on top
+EYE_X, EYE_Y, PUPIL_X, PUPIL_Y, LID_Y = (29, 38), (33, 40), (32, 35), (35, 38), (39, 40)
+#: ragged-edge offsets (fine rows) indexed by |x - HW| % 7 (mirror-exact)
+RAG7 = np.array([0, 1, 0, 2, 1, 0, 1])
+#: hairline / nape steps per 5-column bin (palindromes: mirror-exact)
+PAT9 = np.array([0, 1, -1, 0, 1, 0, -1, 1, 0])
+NAPE9 = np.array([0, 2, 1, 0, 1, 0, 1, 2, 0])
+#: the beret's puff: a superellipsoid (half extents x, y, z; power) on the band, slouching to -x and back
+BERET_PUFF = ((32.0, 27.0, 35.0), 2.5)
+#: the feather's spine (x, half width) per 4-row segment from y = 59 (buried in the puff) up
+FEATHER_SPINE = [(44, 1), (46, 1), (48, 2), (50, 3), (51, 3), (52, 3), (52, 3), (51, 2), (50, 1)]
 
 
-def head_grid() -> Cells:
-    return Cells((-9, 9), (-2, 16), (-4, 14))
+class Frame:
+    """The fine head grid in the skull frame: x 0..44 (the centre column 22), y 0..54 (the chin's
+    bottom row 0), z 0..49 (the face plane 0, -z toward the viewer), with margins for the neck,
+    hair, hat and feather. Masks have the array shape (nz, ny, nx)."""
+
+    def __init__(self):
+        nz, ny, nx = HEAD_SHAPE
+        self.shape = HEAD_SHAPE
+        self.X = (np.arange(nx) - FX)[None, None, :]
+        self.Y = (np.arange(ny) - FY)[None, :, None]
+        self.Z = (np.arange(nz) - FZ)[:, None, None]
+        self.AX = np.abs(self.X - HW)
+
+    def full(self, m) -> np.ndarray:
+        return np.broadcast_to(m, self.shape).copy()
+
+    def box(self, x0: int, x1: int, y0: int, y1: int, z0: int, z1: int, r: int = 0, rt: int = 0) -> np.ndarray:
+        """Inclusive box; ``r`` cuts the vertical edges 45 degrees (an octagonal plan), ``rt``
+        the top edges."""
+        X, Y, Z = self.X, self.Y, self.Z
+        m = (X >= x0) & (X <= x1) & (Y >= y0) & (Y <= y1) & (Z >= z0) & (Z <= z1)
+        ex = np.minimum(X - x0, x1 - X)
+        ez = np.minimum(Z - z0, z1 - Z)
+        if r > 0:
+            m &= (ex + ez) >= r
+        if rt > 0:
+            m &= ((y1 - Y) + np.minimum(ex, ez)) >= rt
+        return self.full(m)
 
 
-def head_origin(p: VoxCharParams, g: Cells) -> tuple[float, float, float]:
-    """Metre origin of the fine head grid: the centre column at x = 0, the chin's bottom at
-    y = 0, the skull's depth centred on z = 0."""
-    c = p.coarse
-    return ((g.lo[0] - 0.5) * c, g.lo[1] * c, (g.lo[2] - (SKULL_Z + 1) / 2) * c)
+def skull_form(f: Frame) -> np.ndarray:
+    """The rounded box: 45-degree staircases of fine voxels on every edge (3 at the front vertical
+    edges, 5 at the back ones, 4 on the top and chin edges, 8 on the top-back, 6 on the
+    bottom-back), corner facets, the jaw 4 voxels narrower per side below the ear line (a 45-degree
+    step, never a terrace)."""
+    X, Y, Z = f.X, f.Y, f.Z
+    hw = HW - np.clip(25 - Y, 0, 4)                  # a 45-degree step in to the jaw under the ear line
+    dx = hw - np.abs(X - HW)
+    yb, yt, zf, zb = Y, TOP - Y, Z, BACK - Z
+    inside = (dx >= 0) & (yb >= 0) & (yt >= 0) & (zf >= 0) & (zb >= 0)
+    cut = ((dx + zf < 3) | (dx + zb < 5) | (yt + zf < 4) | (yt + dx < 4) | (yt + zb < 8)
+           | (yb + zf < 4) | (yb + dx < 4) | (yb + zb < 6)
+           | (dx + yt + zf < 7) | (dx + yt + zb < 10) | (dx + yb + zf < 7) | (dx + yb + zb < 9))
+    return f.full(inside & ~cut)
 
 
-def hair_slabs(p: VoxCharParams, g: Cells, skull_c: np.ndarray) -> np.ndarray:
-    """Coarse hair mass as stacked slabs: a full-footprint crown slab over the skull's top row,
-    a narrower slab on it (and a third one on the swept side), a fringe slab hanging one cell
-    in front of the forehead, side slabs above the ears (from z = 1: the temples stay bare),
-    a nape slab, plus the skull's cut top edges under the hair."""
-    hx = SKULL_X
-    top = SKULL_Y
-    hair = g.empty()
-    fill = g.box(-hx, hx, top - 1, top, 0, SKULL_Z) & ~skull_c      # the chamfers under the hairline
-    sides = g.mirror(g.box(hx + 1, hx + 1, 7, top, 1, SKULL_Z + 1))
-    nape = g.box(-hx - 1, hx + 1, 6, top, SKULL_Z + 1, SKULL_Z + 1)
+def head_origin(p: VoxCharParams) -> tuple[float, float, float]:
+    """Metre origin of the head array: the centre column at x = 0, the chin's bottom at y = 0,
+    the skull's depth centred on z = 0."""
+    vs = p.coarse / UP
+    return (-(FX + HW + 0.5) * vs, -FY * vs, -(FZ + (BACK + 1) / 2) * vs)
+
+
+def main_component(m: np.ndarray) -> np.ndarray:
+    """The largest 6-connected component of ``m`` (drops stray clumps a pattern left loose)."""
+    from .checks import label_components
+    labels, n = label_components(m)
+    if n <= 1:
+        return m
+    sizes = np.bincount(labels.ravel())
+    sizes[0] = 0
+    return labels == int(np.argmax(sizes))
+
+
+def top_faces(m: np.ndarray) -> np.ndarray:
+    above = np.zeros_like(m)
+    above[:, :-1, :] = m[:, 1:, :]
+    return m & ~above
+
+
+def hair_mass(p: VoxCharParams, f: Frame, skull: np.ndarray, form: np.ndarray, ears: np.ndarray) -> np.ndarray:
+    """The hair: a shell 3 voxels thick on the skull (thinner than the reference), bottoms per
+    region (a ragged hairline on the forehead, the temples bare, the sides to mid-ear, the nape),
+    then per style: ``chunky`` raises sparse 5x5 clumps 2 voxels (the lighter tone); ``slabs`` stacks two
+    octagonal slabs and a quiff on the swept side with groove lines along the sweep."""
+    X, Y, Z = f.X, f.Y, f.Z
+    shell = dilate(skull, 3) & ~form & ~dilate(ears)       # the ears stay clear (no hair in the notch)
+    front, back = Z < 0, Z > BACK
+    bins = (X // 5) % 9
+    s = p.fringe_sweep
     if p.hair == "slabs":
-        crown = g.box(-hx - 1, hx + 1, top + 1, top + 1, -1, SKULL_Z + 1)
-        crown |= g.box(-hx, hx, top + 2, top + 2, 0, SKULL_Z)        # the second slab stepped in
-        if p.fringe_sweep:
-            s = p.fringe_sweep
-            crown |= g.box(min(s, 5 * s), max(s, 5 * s), top + 3, top + 3, 0, SKULL_Z - 2)   # the swept top slab
-        fringe = g.box(-hx, hx, top - 1, top + 1, -1, -1)
-        hair = crown | fringe | sides | nape | fill
-    elif p.hair == "short":
-        crown = g.box(-hx - 1, hx + 1, top + 1, top + 1, 0, SKULL_Z + 1)
-        fringe = g.box(-hx, hx, top - 1, top, -1, -1)
-        hair = crown | fringe | sides | nape | fill
+        steps = np.array([3, 2, 1, 1, 0, 0, -1, -1, -2])
+        hl = 55 + (PAT9 if s == 0 else (steps if s < 0 else steps[::-1]))[bins]
+        side = np.where(Z < 10, 46, 37)
+        nape = 30 + 0 * X
+    else:
+        hl = 50 + PAT9[bins]
+        side = np.select([Z < 10, Z < 20, Z < 30], [44, 33, 32], 28) + (5 if p.hair == "short" else 0)
+        nape = 22 + NAPE9[bins]
+    bottom = np.where(front, hl, np.where(back, nape, side))
+    region = (Y >= bottom) & (Y <= (56 if p.hat != "none" else 58))
+    hair = shell & f.full(region)
+    if p.hair == "chunky":
+        clumps = ((f.AX // 5) * 7 + (Y // 5) * 11 + (Z // 5) * 5) % 9 < 3          # sparse, mirror-exact
+        hair |= dilate(skull, 5) & ~dilate(skull, 3) & ~dilate(ears, 2) & f.full(region & clumps & (Y <= 54))
+        hair = main_component(hair)
+    elif p.hair == "slabs" and p.hat == "none":
+        hair |= f.box(-1, 45, 57, 63, -1, 50, r=7)
+        if s < 0:
+            hair |= f.box(-2, 26, 64, 68, 4, 44, r=6)
+            quiff = f.box(-3, 18, 55, 69, -4, 2)
+        elif s > 0:
+            hair |= f.box(18, 46, 64, 68, 4, 44, r=6)
+            quiff = f.box(26, 47, 55, 69, -4, 2)
+        else:
+            hair |= f.box(6, 38, 64, 68, 6, 42, r=6)
+            quiff = f.box(12, 32, 55, 69, -4, 2)
+        hair |= quiff & f.full((69 - Y) + (Z + 4) >= 6)
+        hair &= ~form
+        groove = top_faces(hair) & f.full((Y >= 57) & ((Z + s * (X // 7)) % 8 == 0))
+        hair &= ~groove
     return hair
 
 
-def hat_cells(p: VoxCharParams, g: Cells) -> tuple[np.ndarray, np.ndarray]:
-    """(hat mask, band / visor mask) on the coarse grid."""
-    hx, top = SKULL_X, SKULL_Y
+def hat_masks(p: VoxCharParams, f: Frame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(hat, band, feather) masks before the subtraction of the head and hair."""
+    X, Z = f.X, f.Z
+    none = f.full(False)
+    if p.hat == "beret":
+        Y = f.Y
+        band = f.box(-7, 51, 55, 58, -7, 56, r=8)
+        (rx, ry, rz), power = BERET_PUFF
+        lift = np.clip(Y - 58, 0, None)
+        xx = np.abs(X - (HW - 0.18 * lift)) / rx
+        zz = np.abs(Z - ((BACK + 1) / 2 + 0.12 * lift)) / rz
+        puff = f.full((xx ** power + zz ** power + (lift / ry) ** power <= 1.0) & (Y >= 59))
+        crumple = f.full(((X // 5) * 7 + (Z // 5) * 11) % 9 < 3)                         # sparse 5x5 crumples
+        bump = np.zeros_like(puff)
+        bump[:, 1:, :] = top_faces(puff)[:, :-1, :]
+        hat = band | puff | (bump & crumple)
+        feather = none.copy()
+        for k, (xc, w) in enumerate(FEATHER_SPINE):
+            barb = 1 if (k >= 2 and k % 2) else 0
+            feather |= f.box(xc - w, xc + w + barb, 59 + 4 * k, 62 + 4 * k, 6, 8)
+        return hat, band, feather
     if p.hat == "straw":
-        brim = g.box(-hx - 3, hx + 3, top + 2, top + 2, -3, SKULL_Z + 3)
-        crown = g.box(-hx + 1, hx - 1, top + 3, top + 5, 1, SKULL_Z - 1, r=1)
-        band = g.box(-hx + 1, hx - 1, top + 3, top + 3, 1, SKULL_Z - 1) & crown
-        return brim | crown, band
+        brim = f.box(-16, 60, 55, 57, -16, 65, r=14)
+        crown = f.box(2, 42, 58, 70, 2, 47, r=9, rt=4)
+        return brim | crown, crown & f.full(f.Y <= 61), none
     if p.hat == "cap":
-        dome = g.box(-hx - 1, hx + 1, top + 1, top + 2, -1, SKULL_Z + 1, r=1)
-        visor = g.box(-hx + 2, hx - 2, top + 1, top + 1, -4, -1)   # meets the dome's bottom row at z = 0
-        return dome | visor, visor
-    return g.empty(), g.empty()
+        dome = f.box(-6, 50, 55, 66, -6, 55, r=8, rt=5)
+        visor = f.box(8, 36, 55, 57, -20, -7)
+        return dome | visor, visor, none
+    return none, none, none
 
 
 def build_head(p: VoxCharParams, pal: Palette) -> tuple[list[Part], dict]:
-    """The head parts in the head frame: ``head`` (skin form with the painted face and the
-    tissues), ``hair``, ``beard``, ``hat`` (when present). Returns (parts, stats)."""
+    """The head parts in the head frame: ``head`` (the form with the painted face, the tissues,
+    the brows and the teeth), ``hair``, ``beard`` (with the moustache), ``hat``, ``feather``
+    (when present). Returns (parts, stats)."""
     C = pal.index
-    g = head_grid()
-    k = UP
-    vs = p.coarse / k
-    hx, top, dz = SKULL_X, SKULL_Y, SKULL_Z
+    f = Frame()
+    X, Y, Z, AX = f.X, f.Y, f.Z, f.AX
+    vs = p.coarse / UP
     stats: dict = {}
 
-    # -- coarse form ---------------------------------------------------------------
-    skull_c = g.box(-hx, hx, 0, top, 0, dz, r=1)
-    ears_c = g.mirror(g.box(hx + 1, hx + 1, 4, 5, 4, 5))
-    neck_c = g.box(-2, 2, -2, -1, 3, 7)
-    hair_c = hair_slabs(p, g, skull_c)
-    hat_c, hat_band_c = hat_cells(p, g)
-    if p.hat != "none":
-        hair_c &= ~hat_c
-        hair_c &= g.Y <= top + 1       # only the lower slabs stay under a hat
-    skull = g.up(skull_c, k)
-    ears = g.up(ears_c, k)
-    neck = g.up(neck_c, k)
-    shape = skull.shape
-
-    # -- nose block: one cell wide and proud, two tall, drawn on the fine grid --------------
-    fx, fy, fz = (lambda c, o=0: g.f(0, c, o)), (lambda c, o=0: g.f(1, c, o)), (lambda c, o=0: g.f(2, c, o))
-    nose = fbox(shape, fx(0), fx(0, k - 1), fy(2), fy(3, k - 1), fz(0) - 4, fz(0) - 1)
-    nose &= ~fbox(shape, fx(0), fx(0, k - 1), fy(3, k - 1), fy(3, k - 1), fz(0) - 4, fz(0) - 4)   # soften the top-front edge
-    nose &= ~fbox(shape, fx(0), fx(0, k - 1), fy(2), fy(2), fz(0) - 4, fz(0) - 4)                 # and the bottom-front edge
+    # -- form: the rounded skull, ears with a notch, the neck, the two nose blocks ----------
+    skull = skull_form(f)
+    notch = mirror_x(f.box(47, 48, 29, 34, 22, 27))
+    ear_block = mirror_x(f.box(45, 48, 27, 36, 20, 29))
+    ears = ear_block & ~notch
+    neck = f.box(10, 34, -10, -1, 15, 39)
+    nose = f.box(18, 26, 24, 31, -5, -1) & ~f.box(18, 26, 24, 24, -5, -5) & ~f.box(18, 26, 31, 31, -5, -5)
+    nose |= f.box(20, 24, 32, 37, -2, -1)
     form = skull | ears | neck | nose
-
-    head = Part("head", (shape[2], shape[1], shape[0]), vs, origin=head_origin(p, g), bone="head", symmetric=True)
+    head = Part("head", (f.shape[2], f.shape[1], f.shape[0]), vs, origin=head_origin(p), bone="head", symmetric=True)
     depth = layer_tissues(head, form, HEAD_BANDS, C)
     cart = (nose | ears) & (depth >= 2)
     head.material[cart] = M.MAT_CARTILAGE
     head.color[cart] = C("cartilage")
     stats["form"] = int(form.sum())
-
-    # -- face on the fine grid ---------------------------------------------------------
     skin = head.material == M.MAT_SKIN
     front = front_face(form) & skin
-    eye = fbox(shape, fx(2), fx(3, k - 1), fy(4), fy(6, k - 1), fz(0), fz(0) + 1)
-    eye = mirror_x(eye) & form
+
+    # -- eyes: a white block with the dark lid rows on top, the pupil under the lid, one gleam --
+    eye = mirror_x(f.box(*EYE_X, *EYE_Y, 0, 1)) & form
     head.material[eye] = M.MAT_EYE
-    head.color[eye] = C("eye_dark")
-    band = eye & fbox(shape, 0, shape[2], fy(6), fy(6, k - 1), 0, shape[0])
-    head.color[band] = C("eye_light")
+    head.color[eye] = C("eye_white")
+    head.color[eye & f.full(Y >= LID_Y[0])] = C("eye_lid")
+    pupil = mirror_x(f.box(*PUPIL_X, *PUPIL_Y, 0, 1)) & eye
+    head.color[pupil] = C("eye_dark")
+    head.color[mirror_x(f.box(PUPIL_X[1], PUPIL_X[1], PUPIL_Y[1], PUPIL_Y[1], 0, 0)) & eye] = C("eye_light")
     stats["eye"] = int(eye.sum())
 
-    rows = 3 if p.brows_thick else 2
-    brow = fbox(shape, fx(2) - 1, fx(3, k), fy(7), fy(7, rows - 1), fz(0), fz(0))   # a straight thin line
-    brow = mirror_x(brow) & front
+    # -- mouth line with the corners a voxel up; the tooth row behind it -----------------------
+    mouth = f.box(17, 27, 17, 18, 0, 0) & ~f.box(17, 17, 17, 17, 0, 0) & ~f.box(27, 27, 17, 17, 0, 0)
+    mouth |= f.box(17, 17, 19, 19, 0, 0) | f.box(27, 27, 19, 19, 0, 0)
+    mouth &= front
+    head.color[mouth] = C("mouth")
+    stats["mouth"] = int(mouth.sum())
+    teeth = f.full(False)
+    for c in (11, 14, 17, 20, 23, 26, 29, 32):
+        teeth |= f.box(c, c + 1, 17, 18, 2, 3)
+    teeth &= form & ~eye
+    head.material[teeth] = M.MAT_TOOTH
+    head.color[teeth] = C("tooth")
+    stats["teeth"] = int(teeth.sum())
+
+    # -- cheeks: two warm tones in an ellipse under each eye, the rim dithered -----------------
+    e = np.sqrt(((AX - 12) / 7.0) ** 2 + ((Y - 28) / 4.0) ** 2)
+    base_skin = front & (head.color == C("skin"))
+    head.color[base_skin & f.full(e <= 0.5)] = C("skin_cheek")
+    head.color[base_skin & f.full((e > 0.5) & (e <= 1.0))] = C("skin_cheek_soft")
+    head.color[base_skin & f.full((e > 1.0) & (e <= 1.25) & ((X + Y) % 2 == 0))] = C("skin_cheek_soft")
+    stats["cheek"] = int((base_skin & f.full(e <= 1.0)).sum())
+
+    # -- brows: bars 2 voxels proud (hair material: shaveable), the inner end a row lower -------
+    y1 = 47 if p.brows_thick else 45
+    brow = mirror_x(f.box(25, 40, 43, y1, -2, -1) | f.box(25, 27, 42, 42, -2, -1)) & ~form
     head.material[brow] = M.MAT_HAIR
     head.color[brow] = C("hair")
     stats["brow"] = int(brow.sum())
 
-    cx = fx(0, k // 2)
-    mouth = fbox(shape, cx - 4, cx + 4, fy(1, 1), fy(1, 2), fz(0), fz(0)) & front
-    head.color[mouth] = C("line")
-    stats["mouth"] = int(mouth.sum())
+    # -- hair, hat, feather ------------------------------------------------------------------
+    hair = hair_mass(p, f, skull, form, ear_block) if p.hair != "bald" else f.full(False)
+    hat, band, feather = hat_masks(p, f)
+    hat &= ~form & ~hair
+    feather &= ~form & ~hair & ~hat
 
-    # cheeks: a flat tint ellipse on the face plane (coarse units)
-    xi = (np.arange(shape[2]) + 0.5) / k + g.lo[0]
-    yi = (np.arange(shape[1]) + 0.5) / k + g.lo[1]
-    cheek2d = ((np.abs(xi)[None, :] - 3.1) / 1.3) ** 2 + ((yi[:, None] - 2.5) / 0.9) ** 2 <= 1.0
-    cheek = front & cheek2d[None, :, :] & (head.color == C("skin"))
-    head.color[cheek] = C("skin_cheek")
-    stats["cheek"] = int(cheek.sum())
-
-    # ear holes: a small darker patch on the outer face of each ear
-    hole = fbox(shape, fx(hx + 1, k - 1), fx(hx + 1, k - 1), fy(4, 3), fy(5, 1), fz(4, 3), fz(4, k))
-    hole = mirror_x(hole) & ears
-    head.color[hole] = C("skin_shadow")
-
-    # shadow tone: the neck, the chin's and the nose's under-faces
-    shade = (neck | (under_face(form) & (skull | nose))) & (head.material == M.MAT_SKIN)
-    head.color[shade] = C("skin_shadow")
+    # -- shade: the forehead row under the fringe / hat, the neck, the under-faces, ear notches --
+    cover = (hair | hat)[FZ - 1]                       # (ny, nx) just in front of the face plane
+    has = cover.any(axis=0)
+    fb = np.where(has, cover.argmax(axis=0) - FY, 10 ** 6)[None, None, :]
+    shade = front & f.full((Y >= fb - 3) & (Y < fb))
+    shade |= (neck | (under_face(form) & (skull | nose))) & skin
+    shade |= dilate(notch) & ears & exposed(form) & skin
+    head.color[shade & (head.material == M.MAT_SKIN)] = C("skin_shadow")
     stats["shade"] = int(shade.sum())
 
+    # -- beard zone: the chin and jaw, the cheek line rising to the ear, a ragged top edge -------
+    top = np.minimum(14 + np.maximum(AX - 9, 0), 28) + RAG7[AX % 7] * (AX <= 20)   # ragged on the face only
+    zone = f.full((Y <= top) & (Z <= np.where(AX > 18, 20, 30)) & (Y >= -12))   # shorter along the jaw sides
+    mouth_keep = f.full((AX <= 8) & (Y >= 15) & (Y <= 18) & (Z < 0))
     parts = [head]
+    if p.beard == "stubble":
+        sel = zone & exposed(form) & (head.material == M.MAT_SKIN) & ~neck & ~mouth_keep
+        pat = (AX + 2 * Y + Z) % 4
+        head.color[sel & f.full(pat == 0)] = C("stubble")
+        head.color[sel & f.full(pat == 2)] = C("stubble_soft")
+        stats["beard"] = int(sel.sum())
 
-    # -- hair part: the topmost slab in the lighter tone --------------------------------
-    hair = np.zeros(shape, bool)
-    if hair_c.any():
-        hair = g.up(hair_c, k) & ~form
+    if hair.any():
         hp = Part("hair", head.dims, vs, origin=head.origin, bone="head")
         hp.material[hair] = M.MAT_HAIR
         hp.color[hair] = C("hair")
-        top_row = top + 2 if (p.hair == "slabs" and p.hat == "none") else top + 1
-        light = hair & fbox(shape, 0, shape[2], fy(top_row), shape[1], 0, shape[0])   # the upper slabs
+        if p.hair == "chunky":
+            light = hair & ~dilate(skull, 3)                       # the raised clumps
+        else:
+            light = hair & f.full(Y >= 64)                         # the swept slab and the quiff's top
         hp.color[light] = C("hair_light")
         stats["hair"] = int(hair.sum())
         parts.append(hp)
 
-    # -- beard ---------------------------------------------------------------------
-    if p.beard != "none":
-        # the jaw: the front rows under the mouth and the sides of the jaw up to the ears
-        zone_c = g.box(-hx, hx, 0, 1, 0, 6) | g.mirror(g.box(hx - 1, hx, 0, 3, 0, 6))
-        zone = g.up(zone_c, k)
-        keep_mouth = dilate(mouth, 2)
-        if p.beard == "stubble":
-            sel = zone & exposed(form) & (head.material == M.MAT_SKIN) & ~keep_mouth & ~neck
-            head.color[sel] = C("stubble")
-            stats["beard"] = int(sel.sum())
-        else:
-            if p.beard == "short":
-                beard = dilate(form & zone, 2) & ~form & dilate(zone, 2) & ~keep_mouth & ~dilate(nose, 1)
-            else:
-                block_c = g.box(-hx + 1, hx - 1, -1, 1, -1, -1) | g.box(-hx, hx, -1, 1, 0, 5) | g.box(-hx + 1, hx - 1, -1, -1, 0, 5)
-                beard = g.up(block_c, k) & ~form
-                beard &= ~fbox(shape, 0, shape[2], fy(2), shape[1], 0, shape[0])
-            beard &= ~neck
-            bp = Part("beard", head.dims, vs, origin=head.origin, bone="head")
-            bp.material[beard] = M.MAT_HAIR
-            bp.color[beard] = C("hair")
-            stats["beard"] = int(beard.sum())
-            parts.append(bp)
+    beard = f.full(False)
+    if p.beard in ("short", "full"):
+        thick = 3 if p.beard == "short" else 5
+        beard = dilate(form & zone, thick) & ~form & zone & ~neck & ~mouth_keep
+    if p.mustache:
+        must = f.box(10, 34, 19, 23, -4, -1) | f.box(10, 13, 15, 18, -4, -1) | f.box(31, 34, 15, 18, -4, -1)
+        beard |= must & ~form & ~mouth_keep
+    beard &= ~hair & ~brow
+    if beard.any():
+        # sparse 5x5 clumps one voxel proud, in the lighter tone: the chunky look without a checkerboard
+        clumps = dilate(beard) & ~beard & ~form & ~hair & ~brow & ~mouth_keep
+        clumps &= f.full(((AX // 5) * 7 + (Y // 5) * 11 + (Z // 5) * 5) % 9 < 3)
+        beard = main_component(beard | clumps)
+        bp = Part("beard", head.dims, vs, origin=head.origin, bone="head", symmetric=True)
+        bp.material[beard] = M.MAT_HAIR
+        bp.color[beard] = C("hair")
+        bp.color[beard & clumps] = C("hair_light")
+        stats["beard"] = int(beard.sum())
+        parts.append(bp)
 
-    # -- hat ---------------------------------------------------------------------
-    if p.hat != "none":
-        hat = g.up(hat_c, k) & ~form & ~hair
-        tp = Part("hat", head.dims, vs, origin=head.origin, bone="head", symmetric=True)
+    if hat.any():
+        tp = Part("hat", head.dims, vs, origin=head.origin, bone="head", symmetric=p.hat != "beret")
         mat = M.MAT_PLANT if p.hat == "straw" else M.MAT_CLOTH
-        tone, band_tone = ("straw", "straw_band") if p.hat == "straw" else ("cap", "cap_shade")
+        tone = {"straw": ("straw", "straw_band", "straw"), "cap": ("cap", "cap_shade", "cap"),
+                "beret": ("beret", "beret_shade", "beret_light")}[p.hat]
         tp.material[hat] = mat
-        tp.color[hat] = C(tone)
-        tp.color[hat & g.up(hat_band_c, k)] = C(band_tone)
+        tp.color[hat] = C(tone[0])
+        tp.color[hat & band] = C(tone[1])
+        tp.color[top_faces(hat) & f.full(Y >= (78 if p.hat == "beret" else 64))] = C(tone[2])
         stats["hat"] = int(hat.sum())
         parts.append(tp)
+        if feather.any():
+            fp = Part("feather", head.dims, vs, origin=head.origin, bone="head")
+            fp.material[feather] = M.MAT_PLANT
+            fp.color[feather] = C("feather")
+            spine_x = np.zeros(f.shape[1], int) + 10 ** 6
+            for k, (xc, _) in enumerate(FEATHER_SPINE):
+                spine_x[FY + 59 + 4 * k:FY + 63 + 4 * k] = xc
+            fp.color[feather & f.full(X < spine_x[None, :, None])] = C("feather_shade")
+            stats["feather"] = int(feather.sum())
+            parts.append(fp)
 
     return [crop_part(q) for q in parts], stats
 

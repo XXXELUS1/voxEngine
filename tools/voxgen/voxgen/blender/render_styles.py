@@ -10,7 +10,10 @@ with ``min_run=2`` + a Bevel limited by edge weight, 0.5 voxel, 1 segment; ``--f
 for 2-voxel steps and a 1 voxel chamfer), facet_all (every
 90 degree edge chamfered), slopes (``mesh_slopes.slope_mesh``: cubes whose regular staircases of
 2:1, 1:1 and 1:2 treads:risers become planar facets of 26.6, 45 and 63.4 degrees, lone steps stay
-cubes, no Bevel; ``--facet-step 2`` fits 4:2, 2:2, 2:4, a 2-granular part at its coarse scale), smooth (surface nets, shade smooth, per-face voxel colour, skin material:
+cubes, no Bevel; ``--facet-step 2`` fits 4:2, 2:2, 2:4, a 2-granular part at its coarse scale, the
+rest as fine cubes), chamfer (``mesh_slopes.chamfer_mesh``: the facet look built by the mesher, every
+step edge cut 45 degrees ``facet_step / 2`` voxels into both faces, watertight, no Bevel seams),
+smooth (surface nets, shade smooth, per-face voxel colour, skin material:
 roughness 0.6, no bump, weak subsurface 0.1), clay (smooth + subsurface + thumb-mark bumps), toon
 (EEVEE, 3-step ramp + Freestyle outline), mix (per part: skin parts smooth, the rest facet, see
 ``voxgen.blender.resolve_part_styles``; ``--part-styles head=smooth,hair=facet`` overrides any
@@ -57,8 +60,9 @@ from voxgen.blender import (BACKGROUNDS, LIGHTS, SMOOTH_CLAMPS, STYLES, VIEWS, p
 SMOOTH_STYLES = ("smooth", "clay", "toon")
 FACET_STYLES = ("facet", "facet_all")
 SLOPE_STYLES = ("slopes",)
+CHAMFER_STYLES = ("chamfer",)   # the facet chamfers built by mesh_slopes.chamfer_mesh, no Bevel modifier
 LOWPOLY_STYLES = ("lowpoly",)   # surface nets + light Laplacian, then quadric collapse to a few flat facets
-FLAT_STYLES = FACET_STYLES + SLOPE_STYLES + LOWPOLY_STYLES  # one flat material per palette colour, jitter 0
+FLAT_STYLES = FACET_STYLES + SLOPE_STYLES + CHAMFER_STYLES + LOWPOLY_STYLES  # one flat material per palette colour, jitter 0
 CHAMFER_FRACTION = float(os.environ.get("VOXGEN_CHAMFER", "0.5"))  # chamfer width per step voxel
 LOWPOLY_PASSES = 14             # Laplacian passes before the collapse (free: the 1/2 U design steps melt into a curve)
 LOWPOLY_RATIO = 0.06            # Decimate(collapse) face ratio: the low-poly look of the owner's bald reference
@@ -557,8 +561,15 @@ def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float |
             j = jitter if jitter is not None else 0.0
             st = {}
             m = mesh_slopes.slope_mesh_part(part, model.palette, step=int(facet_step), min_run=2, jitter=j, stats=st)
-            for key in ("faces_in", "faces_sloped", "risers_dropped", "triangles", "faces_out"):
+            for key in ("faces_in", "faces_sloped", "risers_dropped", "triangles", "faces_out", "mixed_blocks"):
                 chamfer["slopes_" + key] = chamfer.get("slopes_" + key, 0) + int(st.get(key, 0))
+        elif style in CHAMFER_STYLES:
+            j = jitter if jitter is not None else 0.0
+            st = {}
+            m = mesh_slopes.chamfer_mesh_part(part, model.palette, step=int(facet_step), min_run=2, jitter=j, stats=st)
+            for key in ("chamfer_edges", "faces_in", "faces_sloped", "risers_dropped", "triangles", "faces_out",
+                        "checkerboards_filled"):
+                chamfer["chamfer_" + key] = chamfer.get("chamfer_" + key, 0) + int(st.get(key, 0))
         else:
             j = jitter if jitter is not None else (0.0 if style in FACET_STYLES else 0.06)
             m = mesh.culled_quads(part, model.palette, jitter=j, ao=style not in FLAT_STYLES)   # baked AO would stripe the chamfers
@@ -568,7 +579,7 @@ def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float |
         objs.append(ob)
         styles.append(style)
         faces += m.n_faces
-        if style in SLOPE_STYLES:
+        if style in SLOPE_STYLES or style in CHAMFER_STYLES:
             assign_palette_materials(ob, m, mat_cache)
         if style in LOWPOLY_STYLES:
             assign_palette_materials(ob, m, mat_cache)

@@ -7,7 +7,7 @@
     voxgen check <file.vxm>
     voxgen import-vox <file.vox> --spec-json <file.vox.json> --out <file.vxm>
     voxgen info <file.vxm>
-    voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,slopes,smooth,clay,toon,mix]
+    voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,chamfer,slopes,smooth,clay,toon,mix]
                   [--light studio|candle] [--views three_quarter,front,profile,back,full] [--size 640]
                   [--samples 96] [--bg dark|grey|light] [--part-styles head=smooth,hair=facet]
                   [--smooth-passes 2] [--smooth-clamp cell|free] [--smooth-inflate 0] [--no-hermite]
@@ -474,8 +474,8 @@ def make_parser() -> argparse.ArgumentParser:
                    help="per-part style overrides, part=style comma list (styles: " + ",".join(PART_STYLES) + "); "
                         "style mix = skin parts smooth, the rest facet")
     p.add_argument("--facet-step", type=int, default=1,
-                   help="facet styles: tread/riser depth in voxels that counts as a step, chamfer 0.5*N voxel; "
-                        "slopes: the staircase patterns scaled by N (default 1; 2 for models drawn in 2-voxel steps)")
+                   help="facet/chamfer styles: tread/riser depth in voxels that counts as a step, chamfer 0.5*N voxel; "
+                        "slopes: the staircase patterns scaled by N (default 1; 3 for models drawn in 3-voxel steps)")
     p.add_argument("--smooth-passes", type=int, default=2, help="Laplacian passes of the smooth parts (default 2)")
     p.add_argument("--smooth-clamp", default="cell", choices=SMOOTH_CLAMPS,
                    help="surface-nets clamp: cell (vertices stay in their cell, default) or free (volume restored)")

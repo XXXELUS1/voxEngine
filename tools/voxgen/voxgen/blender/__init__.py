@@ -12,6 +12,9 @@ A smooth part with the ``sdf`` field is meshed by Hermite surface nets (the exac
 "nets hermite"); without it the Laplacian-smoothed binary nets ("nets cell x2") are used. ``slopes``
 (``voxgen.mesh_slopes``) is the low-poly facet look: regular staircases become 26.6 / 45 / 63.4
 degree planes, lone steps stay cubes, no Bevel (``--part-styles skull=slopes --facet-step 2``).
+``chamfer`` (``voxgen.mesh_slopes.chamfer_mesh``) is the facet look with the chamfers built by the
+mesher instead of the Bevel modifier: every step edge is cut 45 degrees ``facet_step / 2`` voxels
+into both faces, watertight, no seams (``--part-styles skull=chamfer --facet-step 3``).
 """
 from __future__ import annotations
 
@@ -19,8 +22,8 @@ import numpy as np
 
 from voxgen import materials as M
 
-STYLES = ("cubes", "bevel", "facet", "facet_all", "slopes", "lowpoly", "smooth", "clay", "toon", "mix")
-PART_STYLES = ("cubes", "bevel", "facet", "facet_all", "slopes", "lowpoly", "smooth", "clay")  # toon is model-wide (EEVEE)
+STYLES = ("cubes", "bevel", "facet", "facet_all", "chamfer", "slopes", "lowpoly", "smooth", "clay", "toon", "mix")
+PART_STYLES = ("cubes", "bevel", "facet", "facet_all", "chamfer", "slopes", "lowpoly", "smooth", "clay")  # toon is model-wide (EEVEE)
 LIGHTS = ("studio", "candle")
 BACKGROUNDS = ("dark", "grey", "light")
 SMOOTH_CLAMPS = ("cell", "free")

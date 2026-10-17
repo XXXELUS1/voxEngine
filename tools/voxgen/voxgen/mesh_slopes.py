@@ -39,9 +39,12 @@ see "C++ port" below):
    along ``a`` (corner units: ``a + (L+ - L- + 1) / 2``), so the edges of every tread lie at
    ``+- step / 2`` of its plane and consecutive treads of a run meet exactly.
 7. *Risers*: the faces of the wall between two treads that both carry a nonzero slope (same sign)
-   along the axis and whose linked heights differ by exactly ``step`` are dropped and the wall's
-   bottom corners are welded to its top corners (union-find on the integer vertices). Dropped faces
-   propose nothing. A riser next to a flat tread stays, shortened to the half the slope leaves.
+   along the axis and whose linked heights differ by exactly ``step`` are dropped and every integer
+   vertex of the wall's two end lines is welded into one group (union-find). Dropped faces propose
+   nothing, and a tread that an earlier-ranked sheet already dropped keeps no run of its own (on a
+   diagonal staircase every -z face is a riser of the +y runs; welding it from both sheets chained
+   whole staircases into one vertex). A riser next to a flat tread stays, shortened to the half
+   the slope leaves.
 8. *Dual averaging*: the vertices are the welded integer corners (as in ``mesh.culled_quads``);
    each welded group's coordinate along an axis is the mean of the proposals of the faces normal to
    that axis that touch the group (faces of a consistent run agree exactly, so planes stay planar;
@@ -62,16 +65,36 @@ profile, L-, L+, slope per in-plane axis) plus one union-find over the integer c
 depends on floating point until the final averaging, so the port can be tested voxel for voxel
 against ``tests/test_mesh_slopes.py``.
 
+``step > 1`` (:func:`_hybrid`): the solid is cut into ``step``-blocks at the grid phase with the
+fewest *mixed* blocks (partly solid: the 1-voxel face relief of the bald skull); the uniform blocks
+are fitted by the same rules at the block scale (1 block = ``step`` voxels, pulls of half a block)
+and scaled back, the mixed blocks stay fine cubes. A block face toward a mixed block is cut into
+its unit faces (those against solid voxels culled), every block face with a corner on a mixed block
+is pinned flat so the cubes attach at integer corners, and a block face whose edge carries such
+unit corners is fan-triangulated from its centre through them. (The earlier fine-grid fit of a
+non-granular solid moved unit-face corners by ``step / 2`` and left holes and folded faces.)
+
+Chamfer mode (:func:`chamfer_mesh`, style ``chamfer``): the ``facet`` look without Blender's Bevel.
+The step edges of ``mesh.step_edge_table`` (a 90 degree edge, convex or concave, where either face
+extends exactly ``step`` voxels, in a run of ``min_run`` unit edges; here both faces must extend
+``step / 2`` and a face narrower than ``step`` cannot take two chamfers) are cut 45 degrees
+``step / 2`` voxels into both faces: on the doubled grid every edge's wedge of ``step`` half-voxels
+is carved (convex) or filled (concave) as a 1:1 staircase, two fillets meeting at a corner get the
+tetrahedral mitre ``i + j + k <= step - 1``, a fillet cell whose wall or floor a chamfer took away
+is dropped, and the leftover checkerboard edges are filled. The staircases are then fitted by the
+rules above at ``step = 1``, ``min_run = 1``, only on the tagged staircase faces, with the plane
+shifted by half a cell outward (carves) or inward (fills) so it passes through the staircase's
+outer corners: a run of 3-voxel steps becomes one 45 degree plane, a 6:3 run alternating planes and
+flats of 3; two level faces of different staircases (a ridge, a valley, a fillet meeting a chamfer)
+are separate treads. The chamfer quads take the colour of the tread voxel. The mitre tips leave
+sub-voxel slivers folded sideways (``tests``: under 0.5 % of the area), never holes or inverted faces.
+
 Limitations: only the ratios of one scale are fitted (``step=2`` ignores 1-voxel staircases); a
 peak or valley tread between an ascending and a descending run stays flat (half risers on both
 sides); slopes along the two in-plane axes are fitted independently, so a diagonal (a-and-b)
-staircase facet is the sum of the two, not a best fit; with ``step > 1`` a part that is *not*
-exactly ``step``-granular (:func:`granular_phase` is None, e.g. the barber skull with its 1-voxel
-face relief) is fitted on the fine grid, where the full-voxel pulls on unit wall faces leave a few
-invisible zero-area triangles and the odd dropped folded quad (``stats``: ``faces_collapsed``,
-``fins_removed``, ``faces_dropped_crossed``); the raw cube mesh's own non-manifold edges (two
-voxels touching along an edge) are kept as they are. Per face the mesher is O(step * min_run)
-gathers; the barber skull (16.5k faces) takes ~0.2 s.
+staircase facet is the sum of the two, not a best fit; the raw cube mesh's own non-manifold edges
+(two voxels touching along an edge) are kept as they are. Per face the mesher is O(step * min_run)
+gathers; the bald skull at step 3 takes ~0.25 s (slopes, 4k faces) and ~1 s (chamfer, 50k faces).
 """
 from __future__ import annotations
 
@@ -79,7 +102,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .mesh import _AO_LEVELS, Mesh, _empty, _pack_face_colors, _palette_u8, _to_metres, _voxel_rgb
+from .mesh import _AO_LEVELS, Mesh, _empty, _pack_face_colors, _palette_u8, _to_metres, _voxel_rgb, voxel_hash01
 
 DIRS = ((1, 1), (1, -1), (2, -1), (2, 1), (0, 1), (0, -1))  # (axis, sign) in ownership rank order
 NONE = 127  # sentinel of the int8/int16 link and profile arrays
@@ -118,6 +141,7 @@ class _Sheet:
     ao: np.ndarray         # (n, 4) float32 corner AO (0fps rule)
     fid0: int = 0          # global id of face 0
     slope: np.ndarray = field(default_factory=lambda: np.zeros(0))   # (n, 2) float32 per in-plane axis
+    shift: np.ndarray = field(default_factory=lambda: np.zeros(0))   # (n, 2) float64 extra plane offset (chamfer cut)
     L: np.ndarray = field(default_factory=lambda: np.zeros(0))       # (n, 2, 2) int64 [axis][minus, plus]
     prof: dict = field(default_factory=dict)                         # (axis idx, side) -> (n, R) int16
 
@@ -126,8 +150,9 @@ class _Sheet:
         return int(len(self.vox))
 
 
-def _sheets(sp: np.ndarray, P: int, shape: tuple, ao: bool) -> list:
-    """One :class:`_Sheet` per direction of :data:`DIRS` from the padded occupancy ``sp``."""
+def _sheets(sp: np.ndarray, P: int, shape: tuple, ao: bool, masks: list | None = None) -> list:
+    """One :class:`_Sheet` per direction of :data:`DIRS` from the padded occupancy ``sp``;
+    ``masks`` (one (nz, ny, nx) bool per direction) restricts the owning voxels."""
     nz, ny, nx = shape
     out = []
     fid0 = 0
@@ -135,6 +160,8 @@ def _sheets(sp: np.ndarray, P: int, shape: tuple, ao: bool) -> list:
         off = sg * _E[ax]
         nb = sp[P + off[2]:P + off[2] + nz, P + off[1]:P + off[1] + ny, P + off[0]:P + off[0] + nx]
         exposed = sp[P:P + nz, P:P + ny, P:P + nx] & ~nb
+        if masks is not None:
+            exposed = exposed & masks[d]
         idx = np.argwhere(exposed)
         vox = idx[:, ::-1].astype(np.int64)
         n = len(vox)
@@ -164,16 +191,20 @@ def _sheets(sp: np.ndarray, P: int, shape: tuple, ao: bool) -> list:
 
 
 # ----------------------------------------------------------------------------- links and profiles
-def _links(sheet: _Sheet, sp: np.ndarray, ex: np.ndarray, P: int, a: int, side: int, step: int) -> np.ndarray:
+def _links(sheet: _Sheet, sp: np.ndarray, ex: np.ndarray, P: int, a: int, side: int, step: int,
+           cut: np.ndarray | None = None) -> np.ndarray:
     """(n,) int8: the outward height change ``k`` to the linked neighbour face in the next cell on
     ``side`` of in-plane axis ``a`` (``NONE`` when there is none). ``ex``: padded exposure mask of the
-    sheet's direction."""
+    sheet's direction; ``cut``: padded chamfer tags of the sheet's axis, two level faces with
+    different tags (a fillet meeting a chamfer at the riser plane) are not one tread."""
     ax, sg, v = sheet.ax, sheet.sg, sheet.vox
     ea, ed = side * _E[a], sg * _E[ax]
     k_out = np.full(sheet.n, NONE, np.int8)
     for k in range(-2 * step, 2 * step + 1):
         u = v + ea + k * ed
         ok = _gather(ex, P, u)
+        if k == 0 and cut is not None:
+            ok &= _gather(cut, P, u) == _gather(cut, P, v)
         if k > 0:
             for j in range(1, k):
                 ok &= _gather(sp, P, u - j * ed)      # riser wall in the upper column
@@ -255,26 +286,34 @@ def _classify(p_minus: np.ndarray, p_plus: np.ndarray, step: int, min_run: int) 
 
 
 # ----------------------------------------------------------------------------- fitting (rules 2-5)
-def _fit(sheets: list, sp: np.ndarray, P: int, step: int, min_run: int) -> None:
-    """Fill ``slope``, ``L`` and ``prof`` of every sheet, then apply the 1:1 ownership rule."""
+def _profiles(sheets: list, sp: np.ndarray, P: int, step: int, min_run: int,
+              cut: np.ndarray | None = None) -> None:
+    """Rules 2-3: fill ``prof`` of every sheet (links followed up to R cells each way) and reset
+    ``slope``, ``shift`` and ``L`` (one flat tread per cell). ``cut``: (3, ...) padded chamfer tags
+    per face axis (see :func:`_links`)."""
     R = (min_run + 1) * 2 * step
     for sh in sheets:
         ex = np.zeros(sp.shape, bool)
         _scatter(ex, P, sh.vox, True)
         sh.slope = np.zeros((sh.n, 2), np.float32)
+        sh.shift = np.zeros((sh.n, 2), np.float64)
         sh.L = np.ones((sh.n, 2, 2), np.int64)
         for ai, a in enumerate(sh.inpl):
-            profs = {}
             for side in (1, -1):
                 lp = np.full(sp.shape, NONE, np.int8)
-                _scatter(lp, P, sh.vox, _links(sh, sp, ex, P, a, side, step))
-                profs[side] = _profile(sh, lp, P, a, side, R)
-            slope, l_minus, l_plus = _classify(profs[-1], profs[1], step, min_run)
+                _scatter(lp, P, sh.vox, _links(sh, sp, ex, P, a, side, step, None if cut is None else cut[sh.ax]))
+                sh.prof[(ai, side)] = _profile(sh, lp, P, a, side, R)
+
+
+def _fit(sheets: list, sp: np.ndarray, P: int, step: int, min_run: int, cut: np.ndarray | None = None) -> None:
+    """Fill ``prof``, ``slope`` and ``L`` of every sheet (rules 2-4), then apply the 1:1 ownership rule."""
+    _profiles(sheets, sp, P, step, min_run, cut)
+    for sh in sheets:
+        for ai in range(2):
+            slope, l_minus, l_plus = _classify(sh.prof[(ai, -1)], sh.prof[(ai, 1)], step, min_run)
             sh.slope[:, ai] = slope
             sh.L[:, ai, 0] = l_minus
             sh.L[:, ai, 1] = l_plus
-            sh.prof[(ai, 1)] = profs[1]
-            sh.prof[(ai, -1)] = profs[-1]
     for sh in sheets:  # rule 5: a 1:1 run belongs to the earlier-ranked of tread / riser direction
         for ai, a in enumerate(sh.inpl):
             s = sh.slope[:, ai]
@@ -285,7 +324,8 @@ def _fit(sheets: list, sp: np.ndarray, P: int, step: int, min_run: int) -> None:
 
 def _thin_plates(sheets: list, sp: np.ndarray, P: int, step: int) -> int:
     """Rule 5b: a plate at most ``step`` voxels thick whose two sides would pull their corners
-    together (a sloped side pulls by step / 2) keeps its cubes: the slopes of both faces are reset.
+    together (a sloped side pulls by step / 2 per sloped in-plane axis) keeps its cubes: the slopes
+    of both faces are reset.
     Returns the number of plate columns reset."""
     by_dir = {(sh.ax, sh.sg): sh for sh in sheets}
     n_reset = 0
@@ -307,7 +347,7 @@ def _thin_plates(sheets: list, sp: np.ndarray, P: int, step: int) -> int:
         b = _gather(fid_bot, P, v[idx] - (t[idx] - 1)[:, None] * _E[ax][None, :])
         ok = b >= 0
         idx, b = idx[ok], b[ok]
-        pull = ((top.slope[idx] != 0).any(1).astype(np.float64) + (bot.slope[b] != 0).any(1)) * (step / 2.0)
+        pull = ((top.slope[idx] != 0).sum(1) + (bot.slope[b] != 0).sum(1)) * (step / 2.0)  # per sloped axis
         hit = pull >= t[idx]
         top.slope[idx[hit]] = 0.0
         bot.slope[b[hit]] = 0.0
@@ -349,7 +389,9 @@ def _risers(sheets: list, sp: np.ndarray, P: int, step: int, vid, drop: np.ndarr
             prof_all = {1: sh.prof[(ai, 1)], -1: sh.prof[(ai, -1)]}
             R = prof_all[1].shape[1]
             for sigma in (1, -1):  # the run ascends toward sigma * a
-                sel = np.flatnonzero(np.sign(sh.slope[:, ai]) == sigma)
+                # a tread that an earlier-ranked sheet already dropped as its riser (a diagonal
+                # staircase: every -z face is a riser of the +y runs) keeps no run of its own
+                sel = np.flatnonzero((np.sign(sh.slope[:, ai]) == sigma) & ~drop[sh.fid0:sh.fid0 + sh.n])
                 if len(sel) == 0:
                     continue
                 l_side = sh.L[sel, ai, 1 if sigma > 0 else 0]
@@ -362,7 +404,7 @@ def _risers(sheets: list, sp: np.ndarray, P: int, step: int, vid, drop: np.ndarr
                 up = _gather(fid[sh.d], P, base + step * ed)
                 ok &= up >= 0
                 up_slope = sh.slope[np.clip(up - sh.fid0, 0, sh.n - 1), ai]
-                ok &= np.sign(up_slope) == sigma
+                ok &= (np.sign(up_slope) == sigma) & ~drop[np.clip(up, 0, len(drop) - 1)]
                 if not ok.any():
                     continue
                 base, v, h = base[ok], v[ok], sh.h[sel][ok]
@@ -373,16 +415,17 @@ def _risers(sheets: list, sp: np.ndarray, P: int, step: int, vid, drop: np.ndarr
                 lo = base.copy()
                 lo[:, a] += 1 if sigma < 0 else 0
                 lo[:, sh.ax] = h
-                hi = lo.copy()
-                hi[:, sh.ax] = h + sh.sg * step
-                for ub in (0, 1):
-                    plo, phi = lo.copy(), hi.copy()
-                    plo[:, b] += ub
-                    phi[:, b] += ub
-                    i_lo, ok_lo = vid(plo)
-                    i_hi, ok_hi = vid(phi)
-                    good = ok_lo & ok_hi
-                    pairs.append(np.stack([i_lo[good], i_hi[good]], 1))
+                for ub in (0, 1):  # every integer vertex of the two wall lines joins one group
+                    for j in range(step):
+                        plo, phi = lo.copy(), lo.copy()
+                        plo[:, b] += ub
+                        phi[:, b] += ub
+                        plo[:, sh.ax] += sh.sg * j
+                        phi[:, sh.ax] += sh.sg * (j + 1)
+                        i_lo, ok_lo = vid(plo)
+                        i_hi, ok_hi = vid(phi)
+                        good = ok_lo & ok_hi
+                        pairs.append(np.stack([i_lo[good], i_hi[good]], 1))
     if not pairs:
         return np.zeros((0, 2), np.int64)
     return np.concatenate(pairs)
@@ -447,9 +490,16 @@ def _assemble(fq: np.ndarray, pos: np.ndarray, stats: dict) -> tuple:
 
 
 # ----------------------------------------------------------------------------- public
-def _run(solid: np.ndarray, step: int, min_run: int, ao: bool, stats: dict) -> tuple | None:
+def _run(solid: np.ndarray, step: int, min_run: int, ao: bool, stats: dict,
+         pins: np.ndarray | None = None, cut: np.ndarray | None = None) -> tuple | None:
     """Rules 1-9 on the occupancy; (positions (G, 3) float64 corner units, quads (F', 4) int32,
-    corner AO (F', 4), owning voxel (F', 3), sheet id (F',)) or None without faces."""
+    corner AO (F', 4), owning voxel (F', 3), sheet id (F',)) or None without faces. Faces with a
+    corner on the ``pins`` lattice ((nz + 1, ny + 1, nx + 1) bool, z y x) stay flat (hybrid mode:
+    the corners of the blocks that are meshed as fine cubes); ``cut`` ((3, nz, ny, nx) int8 per
+    face axis, chamfer mode) shifts the plane of a face sloped along one axis by ``sign(cut) / 2``
+    outward: positive on the faces of a carved wedge's staircase (the plane through its convex
+    corners), negative on a filled one's (through the concave corners); level faces with
+    different tags are separate treads (see ``_chamfer_grid``)."""
     shape = solid.shape
     P = 2 * step + 2
     sp = np.pad(solid, P)
@@ -458,8 +508,25 @@ def _run(solid: np.ndarray, step: int, min_run: int, ao: bool, stats: dict) -> t
     stats["faces_in"] = F
     if F == 0:
         return None
-    _fit(sheets, sp, P, step, min_run)
+    cut_pad = None if cut is None else np.stack([np.pad(c, P) for c in cut])
+    _fit(sheets, sp, P, step, min_run, cut_pad)
     stats["thin_plates_reset"] = _thin_plates(sheets, sp, P, step)
+    if cut is not None:  # chamfer mode: only the tagged staircase faces slope, with the cut shift
+        for sh in sheets:
+            tag = cut[sh.ax][sh.vox[:, 2], sh.vox[:, 1], sh.vox[:, 0]]
+            sh.slope[tag == 0] = 0.0
+            one = (sh.slope != 0).sum(1) == 1
+            cv = np.sign(tag).astype(np.float64)
+            for ai in range(2):
+                sh.shift[:, ai] = np.where(one & (sh.slope[:, ai] != 0), 0.5 * cv, 0.0)
+    if pins is not None:
+        n_pinned = 0
+        for sh in sheets:
+            c = sh.corners
+            hit = pins[c[..., 2], c[..., 1], c[..., 0]].any(1) & (sh.slope != 0).any(1)
+            sh.slope[hit] = 0.0
+            n_pinned += int(hit.sum())
+        stats["faces_pinned"] = n_pinned
     stats["faces_sloped"] = int(sum((sh.slope != 0).any(1).sum() for sh in sheets))
     # welded integer vertices
     corners = np.concatenate([sh.corners for sh in sheets])  # (F, 4, 3)
@@ -484,6 +551,7 @@ def _run(solid: np.ndarray, step: int, min_run: int, ao: bool, stats: dict) -> t
         for ai, a in enumerate(sh.inpl):
             c = sh.vox[:, a] + (sh.L[:, ai, 1] - sh.L[:, ai, 0] + 1) / 2.0
             off += sh.slope[:, ai].astype(np.float64)[:, None] * (sh.corners[:, :, a] - c[:, None])
+            off += sh.shift[:, ai][:, None]
         prop[sh.fid0:sh.fid0 + sh.n] = sh.h[:, None] + sh.sg * off
     # rule 7: risers
     drop = np.zeros(F, bool)
@@ -519,6 +587,9 @@ def _run(solid: np.ndarray, step: int, min_run: int, ao: bool, stats: dict) -> t
         groups2, g2 = np.unique(lab2, return_inverse=True)
         stats["vertices_welded"] = int(G - len(groups2))
         pos, fk = pos[groups2], g2[fk]
+    if stats.get("debug"):  # internals for diagnostics and tests
+        stats["_debug"] = {"ipos": ipos, "quads": quads, "prop": prop, "drop": drop, "pairs": pairs,
+                           "g_of_v": g_of_v, "pos": pos, "fk": fk, "kept": kept, "sheets": sheets}
     # rule 9: faces
     out_q, src, cidx = _assemble(fk, pos, stats)
     src = kept[src]
@@ -526,7 +597,179 @@ def _run(solid: np.ndarray, step: int, min_run: int, ao: bool, stats: dict) -> t
     sheet_id = np.concatenate([np.full(sh.n, sh.d, np.int64) for sh in sheets])[src]
     corner_ao = np.take_along_axis(np.concatenate([sh.ao for sh in sheets])[src], cidx, 1).astype(np.float32)
     stats["faces_out"] = int(len(out_q))
+    stats["face_dir"] = sheet_id
     return pos, out_q, corner_ao, vox, sheet_id
+
+
+# ----------------------------------------------------------------------------- hybrid (step > 1)
+def _block_phase(solid: np.ndarray, step: int) -> tuple:
+    """The grid phase (px, py, pz) at which the fewest ``step``-blocks are mixed (partly solid);
+    returns (phase, padded solid, solid blocks (Nz, Ny, Nx) bool, mixed blocks)."""
+    nz, ny, nx = solid.shape
+    best = None
+    for pz in range(step):
+        for py in range(step):
+            for px in range(step):
+                pad = np.pad(solid, ((pz, (-nz - pz) % step), (py, (-ny - py) % step), (px, (-nx - px) % step)))
+                b = pad.reshape(pad.shape[0] // step, step, pad.shape[1] // step, step, pad.shape[2] // step, step)
+                cnt = b.sum(axis=(1, 3, 5))
+                full = cnt == step ** 3
+                mixed = (cnt > 0) & ~full
+                n = int(mixed.sum())
+                if best is None or n < best[0]:
+                    best = (n, (px, py, pz), pad, full, mixed)
+                if n == 0:
+                    return best[1:]
+    return best[1:]
+
+
+def _hybrid(solid: np.ndarray, step: int, min_run: int, ao: bool, stats: dict) -> tuple | None:
+    """``step > 1``: the solid cut into ``step``-blocks at the phase with the fewest mixed blocks
+    (:func:`_block_phase`); the uniform blocks are fitted at the block scale by :func:`_run`
+    (the same rules at 1 block = step voxels) and scaled back, the mixed blocks (fine detail:
+    the 1-voxel relief of a face) stay fine cubes. A block face toward a mixed block is cut into
+    its unit faces (those against solid fine voxels culled), every face with a corner on a mixed
+    block is pinned flat (``pins``), so the fine cubes attach at integer corners, and a block face
+    whose edge carries such unit corners is fan-triangulated through them. Returns as
+    :func:`_run`, in fine corner units."""
+    (px, py, pz), pad, full, mixed = _block_phase(solid, step)
+    offset = np.array([px, py, pz], np.int64)
+    Nz, Ny, Nx = full.shape
+    stats["mixed_blocks"] = int(mixed.sum())
+    stats["coarse_phase"] = (px, py, pz) if stats["mixed_blocks"] == 0 else None
+    stats["phase"] = (px, py, pz)
+    dirs = np.array([sg * _E[ax] for ax, sg in DIRS])  # (6, 3) xyz
+    # --- coarse mesh of the uniform blocks, mixed block corners pinned
+    pins = np.zeros((Nz + 1, Ny + 1, Nx + 1), bool)
+    mz, my, mx = np.nonzero(mixed)
+    for dz in (0, 1):
+        for dy in (0, 1):
+            for dx in (0, 1):
+                pins[mz + dz, my + dy, mx + dx] = True
+    res = _run(full, 1, min_run, ao, stats, pins=pins) if full.any() else None
+    parts_pos, parts_q, parts_ao, parts_vox, parts_dir = [], [], [], [], []
+    if res is not None:
+        pos, quads, corner_ao, vox, sheet = res
+        nb = vox + dirs[sheet]
+        inside = ((nb >= 0) & (nb < np.array([Nx, Ny, Nz]))).all(1)
+        adj = np.zeros(len(vox), bool)
+        adj[inside] = mixed[nb[inside, 2], nb[inside, 1], nb[inside, 0]]
+        stats["faces_subdivided"] = int(adj.sum())
+        keep = ~adj
+        pos = pos * step - offset
+        quads, corner_ao, vox, sheet = quads[keep], corner_ao[keep], vox[keep], sheet[keep]
+        vox = vox * step - offset
+        for d, (ax, sg) in enumerate(DIRS):  # the fine voxel of the block's face layer
+            vox[sheet == d, ax] += (step - 1) if sg > 0 else 0
+        parts_pos.append(pos)
+        parts_q.append(quads.astype(np.int64))
+        parts_ao.append(corner_ao)
+        parts_vox.append(vox)
+        parts_dir.append(sheet)
+    # --- fine faces: the mixed blocks and the face layers of the uniform blocks toward them
+    if mixed.any():
+        masks = []
+        for d, (ax, sg) in enumerate(DIRS):
+            off = dirs[d]
+            adjm = np.zeros_like(full)
+            src = full[max(0, -off[2]):Nz - max(0, off[2]), max(0, -off[1]):Ny - max(0, off[1]),
+                       max(0, -off[0]):Nx - max(0, off[0])]
+            dst = mixed[max(0, off[2]):Nz - max(0, -off[2]), max(0, off[1]):Ny - max(0, -off[1]),
+                        max(0, off[0]):Nx - max(0, -off[0])]
+            adjm[max(0, -off[2]):Nz - max(0, off[2]), max(0, -off[1]):Ny - max(0, off[1]),
+                 max(0, -off[0]):Nx - max(0, off[0])] = src & dst
+            m = adjm | mixed
+            masks.append(np.repeat(np.repeat(np.repeat(m, step, 0), step, 1), step, 2))
+        Pf = 2
+        spf = np.pad(pad, Pf)
+        fine = _sheets(spf, Pf, pad.shape, ao, masks)
+        nf = sum(sh.n for sh in fine)
+        stats["faces_fine"] = nf
+        if nf:
+            corners = np.concatenate([sh.corners for sh in fine]).astype(np.float64) - offset
+            base = sum(len(p) for p in parts_pos)
+            parts_pos.append(corners.reshape(-1, 3))
+            parts_q.append(base + np.arange(nf * 4).reshape(nf, 4))
+            parts_ao.append(np.concatenate([sh.ao for sh in fine]))
+            parts_vox.append(np.concatenate([sh.vox for sh in fine]) - offset)
+            parts_dir.append(np.concatenate([np.full(sh.n, sh.d, np.int64) for sh in fine]))
+    else:
+        stats["faces_fine"] = 0
+    if not parts_q:
+        return None
+    # --- merge vertices by position (the pinned block corners coincide with fine corners)
+    pos = np.concatenate(parts_pos)
+    keys = np.round(pos * 4.0).astype(np.int64)
+    uniq, inv = np.unique(keys, axis=0, return_inverse=True)
+    inv = inv.ravel()
+    pos = uniq.astype(np.float64) / 4.0
+    quads = inv[np.concatenate(parts_q)]
+    corner_ao = np.concatenate(parts_ao).astype(np.float32)
+    vox = np.concatenate(parts_vox)
+    sheet = np.concatenate(parts_dir)
+    # --- T-junctions: a block edge that carries fine corners is split through them
+    n_coarse = len(parts_q[0]) if res is not None else 0
+    stats["faces_split_tjunction"] = 0
+    if res is not None and stats["faces_fine"] and n_coarse:
+        fine_keys = set(map(tuple, keys[sum(len(p) for p in parts_pos[:-1]):].tolist()))
+        q = quads[:n_coarse]
+        ipos = pos[q]  # (n, 4, 3)
+        tri = q[:, 2] == q[:, 3]
+        polys, changed = [], []
+        for f in range(n_coarse):
+            nv = 3 if tri[f] else 4
+            poly = []
+            hit = False
+            for i in range(nv):
+                a, b = q[f, i], q[f, (i + 1) % nv]
+                poly.append(int(a))
+                pa, pb = pos[a], pos[b]
+                dlt = pb - pa
+                axis = int(np.argmax(np.abs(dlt)))
+                if abs(abs(dlt[axis]) - step) > 1e-9 or np.abs(np.delete(dlt, axis)).max() > 1e-9:
+                    continue
+                if np.abs(pa - np.round(pa)).max() > 1e-9 or np.abs(pb - np.round(pb)).max() > 1e-9:
+                    continue
+                sgn = 1 if dlt[axis] > 0 else -1
+                mids = []
+                for j in range(1, step):
+                    pm = pa.copy()
+                    pm[axis] += sgn * j
+                    k = tuple(np.round(pm * 4.0).astype(np.int64).tolist())
+                    if k not in fine_keys:
+                        mids = None
+                        break
+                    mids.append(k)
+                if mids:
+                    hit = True
+                    for k in mids:
+                        poly.append(("k", k))
+            if hit:
+                polys.append(poly)
+                changed.append(f)
+        if changed:  # fan from the face centre (a corner fan would leave its own edges unsplit)
+            key_to_id = {tuple(k): i for i, k in enumerate(uniq.tolist())}
+            new_q, new_src, cents = [], [], []
+            for f, poly in zip(changed, polys):
+                ids = [key_to_id[p[1]] if isinstance(p, tuple) else p for p in poly]
+                c = len(pos) + len(cents)
+                cents.append(pos[[i for p_, i in zip(poly, ids) if not isinstance(p_, tuple)]].mean(0))
+                for i in range(len(ids)):
+                    new_q.append([c, ids[i], ids[(i + 1) % len(ids)], ids[(i + 1) % len(ids)]])
+                    new_src.append(f)
+            pos = np.concatenate([pos, np.array(cents, np.float64)])
+            keep = np.ones(len(quads), bool)
+            keep[changed] = False
+            new_q = np.array(new_q, np.int64)
+            new_src = np.array(new_src)
+            quads = np.concatenate([quads[keep], new_q])
+            corner_ao = np.concatenate([corner_ao[keep], np.ones((len(new_q), 4), np.float32)])
+            vox = np.concatenate([vox[keep], vox[new_src]])
+            sheet = np.concatenate([sheet[keep], sheet[new_src]])
+            stats["faces_split_tjunction"] = len(changed)
+    stats["faces_out"] = int(len(quads))
+    stats["face_dir"] = sheet
+    return pos, quads.astype(np.int32), corner_ao, vox, sheet
 
 
 def granular_phase(solid: np.ndarray, step: int) -> tuple | None:
@@ -564,24 +807,14 @@ def slope_mesh(solid: np.ndarray, color: np.ndarray | None = None, step: int = 1
     solid = np.asarray(solid, bool)
     stats = stats if stats is not None else {}
     shape = solid.shape
-    phase = granular_phase(solid, step)
-    stats["coarse_phase"] = phase
-    if phase is not None and step > 1:
-        px, py, pz = phase
-        nz, ny, nx = shape
-        pad = np.pad(solid, ((pz, (-nz - pz) % step), (py, (-ny - py) % step), (px, (-nx - px) % step)))
-        res = _run(pad[::step, ::step, ::step], 1, min_run, ao, stats)
-        if res is not None:
-            pos, quads, corner_ao, vox, sheet = res
-            pos = pos * step - np.array([px, py, pz], np.float64)
-            vox = vox * step - np.array([px, py, pz])
-            for d, (ax, sg) in enumerate(DIRS):  # the fine voxel of the block's face layer
-                vox[sheet == d, ax] += (step - 1) if sg > 0 else 0
-            vox = np.clip(vox, 0, np.array([nx - 1, ny - 1, nz - 1]))
+    if step > 1:
+        res = _hybrid(solid, step, min_run, ao, stats)
     else:
-        res = _run(solid, step, min_run, ao, stats)
-        if res is not None:
-            pos, quads, corner_ao, vox, sheet = res
+        stats["coarse_phase"] = (0, 0, 0)
+        res = _run(solid, 1, min_run, ao, stats)
+    if res is not None:
+        pos, quads, corner_ao, vox, sheet = res
+        vox = np.clip(vox, 0, np.array([shape[2] - 1, shape[1] - 1, shape[0] - 1]))
     if res is None:
         return Mesh(np.zeros((0, 3), np.float32), np.zeros((0, 4), np.int32), np.zeros((0, 4), np.uint8),
                     np.zeros((0,), np.uint8), np.zeros((0, 4), np.float32), np.zeros((0,), bool))
@@ -606,6 +839,273 @@ def slope_mesh_part(part, palette, step: int = 1, min_run: int = 2, jitter: floa
     solid = material != M.MAT_AIR
     m = slope_mesh(solid, part.color, step, min_run, pal=_palette_u8(palette), material=material,
                    jitter=jitter, stats=stats)
+    if m.n_faces == 0:
+        return _empty(part)
+    m.positions = _to_metres(part, m.positions)
+    return m
+
+
+# ----------------------------------------------------------------------------- chamfer
+def _chamfer_wedges(solid: np.ndarray, step: int, min_run: int) -> tuple | None:
+    """The chamfered unit edges of ``solid`` (:func:`mesh.step_edge_table`, mode "steps") whose
+    two faces both extend at least ``step / 2`` voxels, as arrays: edge start corner p (m, 3),
+    edge axis k (m,), in-plane axes (a, b) (m, 2) = the normal axes of the two faces, quadrant
+    signs (ua, ub) (m, 2) (the solid quadrant of a convex edge, the air quadrant of a concave
+    one), convex (m,) bool, owner (m,) 0 = face a owns the chamfer quads, 1 = face b, tread voxel
+    (m, 3) of the owner; or None without such edges."""
+    from .mesh import _culled_quads, step_edge_table
+    res = _culled_quads(solid.astype(np.uint8), np.zeros(solid.shape, np.uint8), np.full((256, 3), 200, np.uint8),
+                        solid, solid, 0.0, False)
+    if res is None:
+        return None
+    P, quads = np.asarray(res[0], np.int64), res[1]
+    t = step_edge_table(P, quads, solid, "steps", min_run, step)
+    sel = np.flatnonzero(t.is_step & (np.minimum(t.ext_a, t.ext_b) * 2 >= step))
+    if len(sel) == 0:
+        return None
+    e = t.edges[np.flatnonzero(t.two)[sel]]
+    fa, fb = t.fa[sel], t.fb[sel]
+    p0, p1 = P[e[:, 0]], P[e[:, 1]]
+    k = np.argmax(np.abs(p1 - p0), axis=1)
+    p = np.minimum(p0, p1)
+    axa, sa, axb, sb = t.axis[fa], t.sign[fa], t.axis[fb], t.sign[fb]
+    va, vb = t.vox[fa], t.vox[fb]
+    convex = (va == vb).all(1)
+    qv = np.where(convex[:, None], va, va + sa[:, None] * _E[axa])  # solid (convex) / air (concave) voxel
+    d = qv - p
+    rows = np.arange(len(sel))
+    ua = np.where(d[rows, axa] == 0, 1, -1)
+    ub = np.where(d[rows, axb] == 0, 1, -1)
+    rank_a = np.array([_rank(int(x), int(s_)) for x, s_ in zip(axa, sa)])
+    rank_b = np.array([_rank(int(x), int(s_)) for x, s_ in zip(axb, sb)])
+    ext_a, ext_b = t.ext_a[sel], t.ext_b[sel]
+    # a face narrower than ``step`` cannot take two chamfers (step / 2 each): when its far edge is
+    # a chamfer candidate too, both edges stay sharp (the face keeps its cubes)
+    keys = {}
+    for i in range(len(sel)):
+        keys.setdefault((int(p[i, 0]), int(p[i, 1]), int(p[i, 2]), int(k[i]), int(rank_a[i])), []).append(i)
+        keys.setdefault((int(p[i, 0]), int(p[i, 1]), int(p[i, 2]), int(k[i]), int(rank_b[i])), []).append(i)
+    keep = np.ones(len(sel), bool)
+    for i in range(len(sel)):
+        for ext, ax_far, u_far, rank in ((ext_a[i], axb[i], ub[i], rank_a[i]), (ext_b[i], axa[i], ua[i], rank_b[i])):
+            if ext >= step:
+                continue
+            p2 = p[i].copy()
+            p2[ax_far] += int(ext) * int(u_far)
+            for j in keys.get((int(p2[0]), int(p2[1]), int(p2[2]), int(k[i]), int(rank)), []):
+                keep[i] = False
+                keep[j] = False
+    if not keep.any():
+        return None
+    p, k, axa, sa, axb, sb, va, vb = p[keep], k[keep], axa[keep], sa[keep], axb[keep], sb[keep], va[keep], vb[keep]
+    convex, ua, ub, rank_a, rank_b, ext_a, ext_b = convex[keep], ua[keep], ub[keep], rank_a[keep], rank_b[keep], ext_a[keep], ext_b[keep]
+    own_a = (ext_a == step) & ((ext_b != step) | (rank_a <= rank_b))
+    owner = np.where(own_a, 0, 1)
+    tread = np.where(own_a[:, None], va, vb)
+    return p, k, np.stack([axa, axb], 1), np.stack([ua, ub], 1), convex, owner, tread, np.stack([sa, sb], 1)
+
+
+def _fill_checkerboards(solid: np.ndarray, passes: int = 4) -> int:
+    """Fill the air cell with the most solid neighbours of every edge whose four cells are two
+    diagonal solids and two diagonal airs (a non-manifold edge); returns the number filled."""
+    n_filled = 0
+    for _ in range(passes):
+        nb = np.zeros(solid.shape, np.int64)
+        for ax in range(3):
+            for sg in (1, -1):
+                sh = np.roll(solid, sg, axis=ax)
+                idx = [slice(None)] * 3
+                idx[ax] = 0 if sg > 0 else -1
+                sh[tuple(idx)] = False
+                nb += sh
+        found = False
+        for ax in range(3):
+            o1, o2 = [a for a in range(3) if a != ax]
+            s = solid
+            a = s[tuple(slice(0, -1) if i in (o1, o2) else slice(None) for i in range(3))]
+            b = s[tuple(slice(1, None) if i in (o1, o2) else slice(None) for i in range(3))]
+            c = s[tuple(slice(1, None) if i == o1 else slice(0, -1) if i == o2 else slice(None) for i in range(3))]
+            d = s[tuple(slice(0, -1) if i == o1 else slice(1, None) if i == o2 else slice(None) for i in range(3))]
+            for solid_pair, air_pair in (((a, b), (c, d)), ((c, d), (a, b))):
+                cb = solid_pair[0] & solid_pair[1] & ~air_pair[0] & ~air_pair[1]
+                if not cb.any():
+                    continue
+                found = True
+                pts = np.argwhere(cb)
+                for pt in pts:
+                    cands = []
+                    for which, cell in enumerate(air_pair):
+                        q = pt.copy()
+                        if cell is c or cell is a:
+                            q[o1] += 1 if cell is c else 0
+                        if cell is d:
+                            q[o2] += 1
+                        if cell is b:
+                            q[o1] += 1
+                            q[o2] += 1
+                        cands.append((nb[tuple(q)], tuple(q)))
+                    best = max(cands)[1]
+                    solid[best] = True
+                    n_filled += 1
+        if not found:
+            break
+    return n_filled
+
+
+def _chamfer_grid(solid: np.ndarray, step: int, min_run: int, color: np.ndarray, material: np.ndarray,
+                  stats: dict) -> tuple:
+    """The doubled grid of the chamfer mode: every chamfered edge gets its wedge of ``step``
+    half-voxels carved (convex) or filled (concave) as a 1:1 staircase; where two concave edges
+    of different axes meet, the corner octant gets the tetrahedral mitre of their fillets
+    (``i + j + k <= step - 1``). Returns (solid2, color2, material2, cut2) with ``cut2`` (3, ...)
+    per face axis: +1 on the staircase faces of the carves, -1 on those of the fills (the plane
+    shift and the tread split of :func:`_run`)."""
+    rep = lambda a: np.repeat(np.repeat(np.repeat(a, 2, 0), 2, 1), 2, 2)
+    solid2, color2, mat2 = rep(solid), rep(color), rep(material)
+    cut2 = np.zeros((3,) + solid2.shape, np.int8)
+    w = _chamfer_wedges(solid, step, min_run)
+    stats["chamfer_edges"] = 0 if w is None else int(len(w[0]))
+    stats["chamfer_cushion_cells"] = 0
+    if w is None:
+        return solid2, color2, mat2, cut2
+    p, k, axes, u, convex, owner, tread, signs = w
+    m = len(p)
+    rows = np.arange(m)
+    shape2 = solid2.shape
+    lim = np.array([shape2[2], shape2[1], shape2[0]])
+    tz, ty, tx = tread[:, 2], tread[:, 1], tread[:, 0]
+
+    def half_index(axis, sign, off):
+        """half-voxel index along ``axis``: ``off`` cells from the corner plane into the ``sign`` side."""
+        return 2 * p[rows, axis] + np.where(sign > 0, off, -1 - off)
+
+    def paint(c, sel):
+        color2[c[:, 2], c[:, 1], c[:, 0]] = color[tz[sel], ty[sel], tx[sel]]
+        mat2[c[:, 2], c[:, 1], c[:, 0]] = material[tz[sel], ty[sel], tx[sel]]
+
+    cover = np.zeros((3,) + shape2, bool)  # per edge axis: the corner tetrahedra of the concave edges
+    cx, cc = np.flatnonzero(convex), np.flatnonzero(~convex)
+
+    def cells_at(sel, i, j, kk):
+        c = np.zeros((len(sel), 3), np.int64)
+        r = np.arange(len(sel))
+        c[r, axes[sel, 0]] = half_index(axes[:, 0], u[:, 0], i)[sel]
+        c[r, axes[sel, 1]] = half_index(axes[:, 1], u[:, 1], j)[sel]
+        c[r, k[sel]] = 2 * p[sel, k[sel]] + kk
+        return c, ((c >= 0) & (c < lim)).all(1)
+
+    def tag(sel, c, ok, i, j, sign):
+        # the staircase faces: of a fill its cells with i + j = step - 1 (the row ends face axis a,
+        # the column tops face axis b) and, for the trimmed ends, every fill cell; of a carve the
+        # first solid cells behind / under the wedge (i + j = step), where the cell (0, step)
+        # carries only a column top and (step, 0) only a row end (their other face continues the
+        # flat beyond the chamfer). The tag is sign * (1 + 2 * run axis + (run ascends toward +)):
+        # two level faces of different staircases (two chamfers meeting at a ridge or a valley)
+        # are not one tread.
+        for side_ax, lead in ((0, j), (1, i)):
+            if sign < 0 or (i + j == step and lead < step):
+                run = axes[sel, 1 - side_ax]
+                asc = sign * u[sel, 1 - side_ax] > 0
+                code = sign * (1 + 2 * run + asc)
+                cut2[axes[sel[ok], side_ax], c[ok, 2], c[ok, 1], c[ok, 0]] = code[ok]
+
+    # carves: the wedge cells of the convex edges go
+    for i in range(step + 1):
+        for j in range(step + 1 - i):
+            for kk in (0, 1):
+                c, ok = cells_at(cx, i, j, kk)
+                if i + j <= step - 1:
+                    solid2[c[ok, 2], c[ok, 1], c[ok, 0]] = False
+                elif i + j == step:
+                    tag(cx, c, ok, i, j, 1)
+                paint(c[ok], cx[ok])
+    # fills: a wedge cell of a concave edge is added only while its supports stand, the cell
+    # toward the wall (i - 1) and the cell toward the floor (j - 1): where a chamfer of a convex
+    # edge has cut the wall or the floor away (a block corner), the fillet is trimmed instead of
+    # floating in front of the chamfer
+    kept = {}
+    for d_ in range(step):
+        for i in range(d_ + 1):
+            j = d_ - i
+            for kk in (0, 1):
+                c, ok = cells_at(cc, i, j, kk)
+                cw, okw = cells_at(cc, i - 1, j, kk)
+                cf, okf = cells_at(cc, i, j - 1, kk)
+                ok &= okw & okf
+                sup = np.zeros(len(cc), bool)
+                sup[ok] = solid2[cw[ok, 2], cw[ok, 1], cw[ok, 0]] & solid2[cf[ok, 2], cf[ok, 1], cf[ok, 0]]
+                solid2[c[sup, 2], c[sup, 1], c[sup, 0]] = True
+                tag(cc, c, sup, i, j, -1)
+                paint(c[sup], cc[sup])
+                kept[(i, j, kk)] = sup
+    # the tetrahedra past the ends of the fillets (two fillets of different axes meeting at a
+    # corner would touch along an edge only)
+    for i in range(step):
+        for j in range(step - i):
+            for kk in range(-(step - i - j), 0):
+                for end, base in ((kk, 0), (1 - kk, 1)):
+                    sel = cc[kept[(i, j, base)]]
+                    if len(sel) == 0:
+                        continue
+                    c, ok = cells_at(sel, i, j, end)
+                    cover[k[sel[ok]], c[ok, 2], c[ok, 1], c[ok, 0]] = True
+    cushion = (cover.sum(0) >= 2) & ~solid2
+    stats["chamfer_cushion_cells"] = int(cushion.sum())
+    solid2 |= cushion
+    cut2[:, cushion] = -7  # the mitre: its own staircases
+    stats["checkerboards_filled"] = _fill_checkerboards(solid2)
+    return solid2, color2, mat2, cut2
+
+
+def chamfer_mesh(solid: np.ndarray, color: np.ndarray | None = None, step: int = 1, min_run: int = 2,
+                 pal: np.ndarray | None = None, material: np.ndarray | None = None, jitter: float = 0.0,
+                 ao: bool = True, stats: dict | None = None) -> Mesh:
+    """Chamfer mesh of the occupancy ``solid``: cubes whose step edges (the rule of
+    ``mesh.step_edge_weights(mode="steps", min_run, step)``: a 90 degree edge, convex or concave,
+    where either face extends exactly ``step`` voxels, in a run of ``min_run`` unit edges; here
+    also both faces at least ``step / 2`` voxels) are cut at 45 degrees ``step / 2`` voxels into
+    each face by one planar quad per unit edge. Built on the doubled grid: each wedge is carved
+    or filled as a staircase of ``step`` half-voxels and the owner's staircase cells (the face
+    with extent ``step``, the earlier of :data:`DIRS` when both) are fitted as 1:1 treads whose
+    plane passes through the wedge's outer corners (the cut shift), so the chamfer quads take the
+    tread's colour. Arguments and output as :func:`slope_mesh`."""
+    if step < 1 or min_run < 1:
+        raise ValueError(f"step and min_run must be >= 1 (got {step}, {min_run})")
+    solid = np.asarray(solid, bool)
+    stats = stats if stats is not None else {}
+    shape = solid.shape
+    if color is None:
+        color = np.zeros(shape, np.uint8)
+    if material is None:
+        material = solid.astype(np.uint8)
+    solid2, color2, mat2, cut2 = _chamfer_grid(solid, step, min_run, color, material, stats)
+    # every half-voxel step of the doubled grid comes from a wedge (the model's own steps are two
+    # half-voxels or more), so each one is fitted (min_run 1); ``min_run`` is the edge run rule
+    res = _run(solid2, 1, 1, ao, stats, cut=cut2) if solid2.any() else None
+    if res is None:
+        return Mesh(np.zeros((0, 3), np.float32), np.zeros((0, 4), np.int32), np.zeros((0, 4), np.uint8),
+                    np.zeros((0,), np.uint8), np.zeros((0, 4), np.float32), np.zeros((0,), bool))
+    pos, quads, corner_ao, vox2, sheet = res
+    pos = pos / 2.0
+    if pal is None:
+        pal = np.full((256, 3), 200, np.uint8)
+    ci = color2[vox2[:, 2], vox2[:, 1], vox2[:, 0]]
+    fine = vox2 // 2
+    f = 1.0 + (voxel_hash01(fine[:, 0], fine[:, 1], fine[:, 2]) * 2.0 - 1.0) * jitter
+    rgb = np.clip(pal[ci].astype(np.float32) * f[:, None] + 0.5, 0, 255).astype(np.uint8)
+    mats = mat2[vox2[:, 2], vox2[:, 1], vox2[:, 0]].astype(np.uint8)
+    return Mesh(pos.astype(np.float32), quads, _pack_face_colors(rgb, corner_ao), mats, corner_ao,
+                np.zeros(len(quads), bool))
+
+
+def chamfer_mesh_part(part, palette, step: int = 1, min_run: int = 2, jitter: float = 0.0,
+                      stats: dict | None = None) -> Mesh:
+    """:func:`chamfer_mesh` of a ``Part``: positions in metres of its local space."""
+    from . import materials as M
+    material = part.material
+    solid = material != M.MAT_AIR
+    m = chamfer_mesh(solid, part.color, step, min_run, pal=_palette_u8(palette), material=material,
+                     jitter=jitter, stats=stats)
     if m.n_faces == 0:
         return _empty(part)
     m.positions = _to_metres(part, m.positions)

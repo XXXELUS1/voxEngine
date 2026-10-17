@@ -523,20 +523,38 @@ def _face_extents(solid: np.ndarray) -> dict:
     return out
 
 
-def step_edge_weights(m: Mesh, part, mode: str = "steps", min_run: int = 2, step: int = 1) -> EdgeWeights:
-    """Chamfer weights for the edges of a :func:`culled_quads` mesh of ``part`` (see the module
-    docstring for the rule). ``mode``: ``"steps"`` (the rule, with ``min_run``) or ``"all"`` (every
-    90 degree edge); ``step``: the tread / riser depth in voxels that counts as a step (1, or 2 for
-    a model drawn in 2-voxel steps)."""
+@dataclass
+class StepEdges:
+    """Edge table of a cube mesh in corner units (:func:`step_edge_table`): every mesh edge, which
+    of the two-faced ones are 90 degree step edges by the rule of the module docstring, and the
+    two faces with their extents at each two-faced edge (``mesh_slopes.chamfer_mesh`` builds its
+    chamfers from it)."""
+    edges: np.ndarray      # (E, 2) int32 vertex ids (min, max), sorted by min * N + max
+    two: np.ndarray        # (E,) bool: shared by exactly two faces
+    fa: np.ndarray         # (E2,) int64 first / second face of each two-faced edge (E2 = two.sum())
+    fb: np.ndarray
+    ext_a: np.ndarray      # (E2,) int64 extent of face a / b away from the edge (0 in mode "all")
+    ext_b: np.ndarray
+    different: np.ndarray  # (E2,) bool: the faces have different normals (a 90 degree edge)
+    is_step: np.ndarray    # (E2,) bool: the step rule holds (mode "all": every 90 degree edge)
+    axis: np.ndarray       # (F,) int64 normal axis per face
+    sign: np.ndarray       # (F,) int64 normal sign per face
+    vox: np.ndarray        # (F, 3) int64 owning voxel (x, y, z) per face
+    stats: dict
+
+
+def step_edge_table(P: np.ndarray, quads: np.ndarray, solid: np.ndarray, mode: str = "steps",
+                    min_run: int = 2, step: int = 1) -> StepEdges:
+    """:class:`StepEdges` of the cube mesh with integer corner positions ``P`` (N, 3) and ``quads``
+    (F, 4) of the occupancy ``solid`` (nz, ny, nx); ``mode``, ``min_run``, ``step`` as in
+    :func:`step_edge_weights`."""
     if step < 1:
         raise ValueError(f"step must be >= 1, not {step}")
-    N = len(m.positions)
-    if m.n_faces == 0:
-        return EdgeWeights(np.zeros((0, 2), np.int32), np.zeros(0, np.float32),
-                           {"edges": 0, "edges_90": 0, "edges_step": 0, "edges_nonmanifold": 0})
-    vs = float(part.voxel_size)
-    P = np.rint((m.positions - np.asarray(part.origin, np.float32)) / vs).astype(np.int64)  # corner units
-    Q = P[m.quads]                                    # (F, 4, 3)
+    if mode not in ("steps", "all"):
+        raise ValueError(f"mode must be 'steps' or 'all', not {mode!r}")
+    N = len(P)
+    P = np.asarray(P, np.int64)
+    Q = P[quads]                                      # (F, 4, 3)
     F = len(Q)
     C = Q.mean(1)                                     # face centre
     a = np.argmin(Q.max(1) - Q.min(1), axis=1)        # normal axis (the flat one)
@@ -548,7 +566,7 @@ def step_edge_weights(m: Mesh, part, mode: str = "steps", min_run: int = 2, step
     # per quad side i (edge Q[i] -> Q[i+1]): extent of the face away from that edge
     ext = np.zeros((F, 4), np.int64)
     if mode == "steps":
-        table = _face_extents(part.solid())
+        table = _face_extents(solid)
         for i in range(4):
             d = (Q[:, i] + Q[:, (i + 1) % 4]) * 0.5 - C   # +-0.5 along one in-plane axis
             k = np.argmax(np.abs(d), axis=1)
@@ -558,10 +576,8 @@ def step_edge_weights(m: Mesh, part, mode: str = "steps", min_run: int = 2, step
                 if sel.any():
                     v = vox[sel]
                     ext[sel, i] = arr[v[:, 2], v[:, 1], v[:, 0]]
-    elif mode != "all":
-        raise ValueError(f"mode must be 'steps' or 'all', not {mode!r}")
     # group the 4F quad sides into mesh edges
-    e0 = m.quads.astype(np.int64)
+    e0 = np.asarray(quads, np.int64)
     e1 = np.roll(e0, -1, axis=1)
     key = (np.minimum(e0, e1) * N + np.maximum(e0, e1)).ravel()  # (4F,)
     fidx = np.repeat(np.arange(F), 4)
@@ -573,10 +589,11 @@ def step_edge_weights(m: Mesh, part, mode: str = "steps", min_run: int = 2, step
     ia, ib = order[starts[two]], order[starts[two] + 1]
     fa, fb = fidx[ia], fidx[ib]
     different = (a[fa] != a[fb]) | (s[fa] != s[fb])
+    ext_a, ext_b = ext[fa, side[ia]], ext[fb, side[ib]]
     if mode == "all":
         is_step = different
     else:
-        is_step = different & ((ext[fa, side[ia]] == step) | (ext[fb, side[ib]] == step))
+        is_step = different & ((ext_a == step) | (ext_b == step))
         if min_run > 1 and is_step.any():
             # runs: consecutive unit edges on one line between faces of the same two normals
             si = np.flatnonzero(is_step)
@@ -598,9 +615,25 @@ def step_edge_weights(m: Mesh, part, mode: str = "steps", min_run: int = 2, step
             keep = np.empty(len(o), bool)
             keep[o] = run_len >= min_run
             is_step[si[~keep]] = False
-    w = np.zeros(len(uniq), np.float32)
-    w[np.flatnonzero(two)[is_step]] = 1.0
     edges = np.stack([uniq // N, uniq % N], 1).astype(np.int32)
     stats = {"edges": int(len(uniq)), "edges_90": int(different.sum()), "edges_step": int(is_step.sum()),
              "edges_nonmanifold": int((~two).sum())}
-    return EdgeWeights(edges, w, stats)
+    return StepEdges(edges, two, fa, fb, ext_a, ext_b, different, is_step, a, s, vox, stats)
+
+
+def step_edge_weights(m: Mesh, part, mode: str = "steps", min_run: int = 2, step: int = 1) -> EdgeWeights:
+    """Chamfer weights for the edges of a :func:`culled_quads` mesh of ``part`` (see the module
+    docstring for the rule). ``mode``: ``"steps"`` (the rule, with ``min_run``) or ``"all"`` (every
+    90 degree edge); ``step``: the tread / riser depth in voxels that counts as a step (1, or 2 for
+    a model drawn in 2-voxel steps)."""
+    if step < 1:
+        raise ValueError(f"step must be >= 1, not {step}")
+    if m.n_faces == 0:
+        return EdgeWeights(np.zeros((0, 2), np.int32), np.zeros(0, np.float32),
+                           {"edges": 0, "edges_90": 0, "edges_step": 0, "edges_nonmanifold": 0})
+    vs = float(part.voxel_size)
+    P = np.rint((m.positions - np.asarray(part.origin, np.float32)) / vs).astype(np.int64)  # corner units
+    t = step_edge_table(P, m.quads, part.solid(), mode, min_run, step)
+    w = np.zeros(len(t.edges), np.float32)
+    w[np.flatnonzero(t.two)[t.is_step]] = 1.0
+    return EdgeWeights(t.edges, w, t.stats)

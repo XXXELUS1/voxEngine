@@ -1,7 +1,7 @@
 """Model sanity checks. ``run(model)`` returns ``{"errors": [...], "warnings": [...], "stats": {...}}``.
 
 Checks (all numpy, no scipy):
-  floating      solid 6-connected components not attached to the largest one
+  floating      solid 6-connected components not attached to the largest one nor touching another part (same frame)
                 (error if a component has more than ``floating_error_vox`` voxels, else warning)
   budget        solid voxels per part vs ``part.budget`` (or ``default_budget``)
   palette_size  palette <= 256, colour indices in range, solid voxels with colour 0
@@ -81,14 +81,61 @@ def component_sizes(labels: np.ndarray, count: int) -> np.ndarray:
 # individual checks: each appends to errors/warnings and returns stats
 # ---------------------------------------------------------------------------
 
-def check_floating(part: Part, errors: list, warnings: list, floating_error_vox: int = FLOATING_ERROR_VOX) -> dict:
+def _touches(mask: np.ndarray, other: np.ndarray) -> bool:
+    """True if any voxel of ``mask`` shares a face with a voxel of ``other`` (same shape)."""
+    for ax in range(3):
+        for sh in (1, -1):
+            a = np.roll(mask, sh, axis=ax)
+            # roll wraps around; clear the wrapped slice
+            idx = [slice(None)] * 3
+            idx[ax] = slice(0, 1) if sh == 1 else slice(-1, None)
+            a[tuple(idx)] = False
+            if (a & other).any():
+                return True
+    return False
+
+
+def other_parts_anchor(model: Model, part: Part) -> np.ndarray | None:
+    """Solid voxels of the other parts resampled into ``part``'s voxel frame (same voxel size, any
+    origin/dims: parts are cropped individually), or None when no other part overlaps it."""
+    nz, ny, nx = part.solid().shape
+    anchor = np.zeros((nz, ny, nx), dtype=bool)
+    hit = False
+    for q in model.parts:
+        if q is part or q.count_solid() == 0 or abs(q.voxel_size - part.voxel_size) > 1e-9:
+            continue
+        # offset of q's voxel (0,0,0) inside part's frame, in voxels
+        off = [int(round((q.origin[i] - part.origin[i]) / part.voxel_size)) for i in range(3)]
+        qs = q.solid()
+        qz, qy, qx = qs.shape
+        # overlap in part coordinates
+        x0, y0, z0 = max(off[0], 0), max(off[1], 0), max(off[2], 0)
+        x1, y1, z1 = min(off[0] + qx, nx), min(off[1] + qy, ny), min(off[2] + qz, nz)
+        if x0 >= x1 or y0 >= y1 or z0 >= z1:
+            continue
+        sub = qs[z0 - off[2]:z1 - off[2], y0 - off[1]:y1 - off[1], x0 - off[0]:x1 - off[0]]
+        anchor[z0:z1, y0:y1, x0:x1] |= sub
+        hit = hit or bool(sub.any())
+    return anchor if hit else None
+
+
+def check_floating(part: Part, errors: list, warnings: list, floating_error_vox: int = FLOATING_ERROR_VOX,
+                   anchor: np.ndarray | None = None) -> dict:
+    """``anchor``: solid voxels of the *other* parts in the same frame (same dims/origin/voxel size);
+    a component of this part that shares a face with them is attached (hair on skin, a hat on
+    hair), not floating, and is counted in ``attached`` instead."""
     solid = part.solid()
     labels, count = label_components(solid)
     sizes = component_sizes(labels, count)
     floating = []
+    attached = 0
     for lab in range(2, count + 1):
+        comp = labels == lab
+        if anchor is not None and _touches(comp, anchor):
+            attached += 1
+            continue
         sz = int(sizes[lab])
-        zz, yy, xx = np.nonzero(labels == lab)
+        zz, yy, xx = np.nonzero(comp)
         at = (int(xx.min()), int(yy.min()), int(zz.min()))
         floating.append((sz, at))
     n_err = 0
@@ -100,7 +147,7 @@ def check_floating(part: Part, errors: list, warnings: list, floating_error_vox:
         else:
             warnings.append(msg)
     return {"components": count, "floating": len(floating), "floating_voxels": int(sum(s for s, _ in floating)),
-            "largest": int(sizes[1]) if count else 0}
+            "attached": attached, "largest": int(sizes[1]) if count else 0}
 
 
 def check_budget(part: Part, errors: list, warnings: list, default_budget: int = DEFAULT_BUDGET) -> dict:
@@ -258,7 +305,7 @@ def run(model: Model, floating_error_vox: int = FLOATING_ERROR_VOX, default_budg
         if want("budget"):
             ps["budget"] = check_budget(part, errors, warnings, default_budget)
         if want("floating"):
-            ps["floating"] = check_floating(part, errors, warnings, floating_error_vox)
+            ps["floating"] = check_floating(part, errors, warnings, floating_error_vox, other_parts_anchor(model, part))
         if want("symmetry_x"):
             ps["symmetry_x"] = check_symmetry_x(part, errors, warnings)
         if want("layer_order"):

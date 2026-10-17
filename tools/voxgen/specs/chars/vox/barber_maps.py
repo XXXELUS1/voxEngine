@@ -23,7 +23,7 @@ left), +y up, the face plane is z = 0 and looks toward -z, the chin's bottom ski
 COLOURS = {
     "skin": "#de995f", "skin_light": "#ebc18f", "skin_shadow": "#c87e48",
     "hair": "#602f15", "hair_dark": "#4f2914", "hair_light": "#733b1d", "hair_black": "#35190b",
-    "eye_frame": "#2c0e07", "pupil": "#1c0904", "eye_white": "#efe6d6",
+    "eye_frame": "#2c0e07", "pupil": "#1c0904", "eye_white": "#d8c9b0",
     "red": "#732015", "red_light": "#8c2b19", "red_dark": "#58160e", "red_crease": "#440f0a",
     "feather": "#d9c4a0", "feather_shadow": "#c6a582",
 }
@@ -50,8 +50,8 @@ FACE = dict(
         "..bbbbbbbbbbbb..",
         "..bbbbbbbbbbbb..",  # y 8-8.25
         "..KKKKKKKKKK.222",  # y 7.75-8   eye frame x -3.5..-1, nose bridge x -0.75..0
-        "..KWWPPPPWWK.222",  # y 7.5-7.75 white 1/2, pupil 1 U, white 1/2
-        "..KWWPPPPWWK.222",
+        "..KKKKKKKKKK.222",  # y 7.5-7.75 upper lid: the eye is half closed as on the sheet
+        "..KWWPPPPWWK.222",  # y 7.25-7.5 white 1/2, pupil 1 U, white 1/2
         "..KWWPPPPWWK.222",
         "..KWWPPPPWWK.222",  # y 6.75-7
         "..KKKKKKKKKK.222",  # y 6.5-6.75
@@ -85,11 +85,11 @@ FACE = dict(
 )
 
 # Beard: 1/2 U cells, left half (x -5.5..0), rows y 4 -> -1.
-# '#' on the face plane (z -0.75..0); '>' side strip / chamfer filler (z 0..3, only outside the skull);
+# '#' on the face plane (z -0.75..0); '>' side strip / chamfer filler (z -0.75..3, only outside the skull);
 # '=' under the chin (z -0.75..2).
 BEARD = dict(
     view="front", cell=0.5, origin=(-5.5, 4.0), mirror=True, material="MAT_HAIR",
-    depth={"#": (-0.75, 0.0), ">": (0.0, 3.0), "=": (-0.75, 2.0)},
+    depth={"#": (-0.75, 0.0), ">": (-0.75, 3.0), "=": (-0.75, 2.0)},
     palette={"hair_dark": 5, "hair_black": 3, "hair": 2}, block=1.0,
     rows=[
         "...#.......",  # y 3.5-4   beard top at the face edge
@@ -105,29 +105,30 @@ BEARD = dict(
     ],
 )
 
-# Beret: 1/2 U cells, full width (x -9..9), rows y 17.5 -> 9.5. Letters give the z extent:
-# A -3..12 (widest layer), B -2..11, C -1..10 (band), D 0..8, E 1..6 (crumples on top).
+# Beret: 1/2 U cells, full width (x -9..9), rows y 18 -> 10. Letters give the z extent (mixed
+# along a row so the plan outline is ragged, narrower letters at the ends so the plan is rounded):
+# A -2..11.5, B -1.5..11, C -1..10 (band), D 0..9, E 1..7 (crumples on top). Slouch to -x.
 BERET = dict(
-    view="front", cell=0.5, origin=(-9.0, 17.5), mirror=False, material="MAT_CLOTH",
-    depth={"A": (-3.0, 12.0), "B": (-2.0, 11.0), "C": (-1.0, 10.0), "D": (0.0, 8.0), "E": (1.0, 6.0)},
+    view="front", cell=0.5, origin=(-9.0, 18.0), mirror=False, material="MAT_CLOTH",
+    depth={"A": (-2.0, 11.5), "B": (-1.5, 11.0), "C": (-1.0, 10.0), "D": (0.0, 9.0), "E": (1.0, 7.0)},
     palette={"red": 45, "red_light": 25, "red_dark": 20, "red_crease": 10}, block=1.5,
     rows=[
-        "..........EE....EEE.................",  # y 17-17.5 crumples
-        ".....DDDDDDDDDDDDDDDD...............",  # y 16.5-17 puff 3 (slouched -2.5)
-        "....DDDDDDDDDDDDDDDDDD..............",
-        "...CCCCCCCCCCCCCCCCCCCC.............",  # y 15.5-16
-        ".BBBBBBBBBBBBBBBBBBBBBBBBBB.........",  # y 15-15.5 puff 2 (slouched -2)
-        "ABBBBBBBBBBBBBBBBBBBBBBBBBBBBB......",  # y 14.5-15
-        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA....",  # y 14-14.5 puff 1 (slouched -1)
-        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...",
-        "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB..",
-        "BBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABB..",  # y 12.5-13
-        ".CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBC...",  # y 12-12.5
-        ".DDDDDDCCCCCCCCCCCCCCCCCCCCCC.......",  # y 11.5-12 band x -5.5..5.5, droop x -8.5..-5.5
-        ".DDDDDDCCCCCCCCCCCCCCCCCCCCCC.......",  # y 11-11.5
-        "..DDDDD.............................",  # y 10.5-11 droop over the left temple
-        "...DDDD.............................",
-        "....DD..............................",  # y 9.5-10
+        "................EEE...EE............",  # y 17.5-18 crumples (both rest on the row below)
+        "..........EEDDDDDDDDDDDEE...........",  # y 17-17.5
+        "........DDDDDDDDDDDDDDDDDD..........",  # y 16.5-17
+        "......DDCCCCCCCDDDCCCCCCCCDD........",  # y 16-16.5
+        "....CCCCCCBBBBBBCCCCCBBBBBBBCC......",  # y 15.5-16
+        "...BBBBCCCBBBBBBBBBBBBBBBBBBCCC.....",  # y 15-15.5
+        "..CBBAAAABBBAAAAAAABBBAAAAABBC......",  # y 14.5-15
+        ".DCBBAAAAAAAAAAAAAAAAAAAAAAAABBC....",  # y 14-14.5
+        ".CBBAAAAAAAAAAAAAAAAAAAAAAAAAABBC...",  # y 13.5-14 widest
+        "DCBBAAAAAAAAAAAAAAAAAAAAAAAAAABBC...",  # y 13-13.5
+        "DCBBBBBBBBBBBBBBBBBBBBBBBBBBBBCD....",  # y 12.5-13
+        ".DDDDDCCCCCCCCCCCCCCCCCCCCCCCC......",  # y 12-12.5 band x -5.5..5.5, droop x -8.5..-6
+        ".DDDDDDCCCCCCCCCCCCCCCCCCCCCC.......",  # y 11.5-12
+        "..DDDDD.............................",  # y 11-11.5 droop over the left temple
+        "..DDDD..............................",  # y 10.5-11
+        "...DD...............................",  # y 10-10.5
     ],
 )
 
@@ -141,13 +142,13 @@ HAIR_FRONT = dict(
     palette={"hair": 5, "hair_dark": 3, "hair_light": 2}, block=1.0,
     rows=[
         "............................",  # y 11.5-12 (band)
-        "...11ddddddddddddddddd11....",  # y 11-11.5 fringe under the band
-        "..211ccccccccccccccccc112...",  # y 10.5-11
-        "..21bbbbb.bbb.bbbbbbb.b12...",  # y 10-10.5 ragged lower edge
-        ".321bb....b.......bb..123...",  # y 9.5-10 tufts over the temples
-        ".321b.................b123..",  # y 9-9.5
-        ".321..................123...",  # y 8.5-9
-        ".3321................1233...",  # y 8-8.5
+        "..111dddddddddddddddddd111..",  # y 11-11.5 fringe under the band, locks x 4.5..6
+        ".2111ccccccccccccccccc1112..",  # y 10.5-11
+        "..21bbbbb.bbb.bbbbbbb.bb12..",  # y 10-10.5 ragged lower edge
+        ".321bb....b......b....bb123.",  # y 9.5-10 tufts over the temples
+        ".321b..................b123.",  # y 9-9.5
+        ".321....................123.",  # y 8.5-9
+        ".3321..................1233.",  # y 8-8.5
         "3321....................1233",  # y 7.5-8
         "3322....................2233",  # y 7-7.5
         ".332....................233.",  # y 6.5-7
@@ -170,15 +171,15 @@ HAIR_SIDE = dict(
     palette={"hair": 5, "hair_dark": 3, "hair_light": 2}, block=1.0,
     rows=[
         ".........................",  # y 11.5-12 (band)
-        "..........CCCCCCCCCCCCCC.",  # y 11-11.5 z 3.5..10.5
-        ".........CCCCCCCCCCCCCCC.",  # y 10.5-11
-        "..........CCCCCCCCCCCCCCB",  # y 10-10.5
-        "..........CCCCCCCCCCCCCBB",  # y 9.5-10
-        "...........CCCCCCCCCCCCCC",  # y 9-9.5
-        "...........CCCCCCCCCCCCC.",  # y 8.5-9
-        "............CCCCCCCCCCCCB",  # y 8-8.5
-        "............CCCCCCCCCCCBB",  # y 7.5-8
-        "............CCCCCCCCCCCC.",  # y 7-7.5
+        ".....CCCCCCCCCCCCCCCCCCC.",  # y 11-11.5 z 1..10.5
+        ".....CCCCCCCCCCCCCCCCCCC.",  # y 10.5-11
+        ".....CCCCCCCCCCCCCCCCCCCB",  # y 10-10.5
+        ".....CCCCCCCCCCCCCCCCCCBB",  # y 9.5-10
+        "......CCCCCCCCCCCCCCCCCCC",  # y 9-9.5
+        "......CCCCCCCCCCCCCCCCCC.",  # y 8.5-9
+        "......CCCCCCCCCCCCCCCCCCB",  # y 8-8.5
+        "......CCCCCCCCCCCCCCCCCBB",  # y 7.5-8
+        ".......CCCCCCCCCCCCCCCCC.",  # y 7-7.5
         ".............CCCCCCCCCCC.",  # y 6.5-7
         ".............CCCCCCCCCCCB",  # y 6-6.5
         ".............CCCCCCCCCCC.",  # y 5.5-6

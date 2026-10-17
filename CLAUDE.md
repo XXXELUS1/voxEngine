@@ -24,6 +24,7 @@
 | `docs/spec/` | **Контракты — источник истины**: `vxm-format.md`, `voxbody-api.md`, `voxgen-cli.md` |
 | `docs/design/barberians.md` | Диздок владельца (не править без просьбы); разделы «Визуал и звук», «Техника», «Этапы» |
 | `docs/adr/`, `docs/style-guide.md`, `docs/workflow.md`, `docs/roadmap.md` | Решения, визуальный стиль + журнал правок, порядок работы, этапы |
+| `docs/reference/` | **Референс владельца** `barber-concept.png` (единственное закоммиченное изображение) и его поблочный разбор `barber-head.md` — источник истины по форме головы |
 | `tools/voxgen/` | Python-генератор: `specs/` (спеки моделей, коммитятся), `voxgen/` (SDF, слои, волосы, рендер, проверки), `tests/` |
 | `src/voxbody/` | C++ GDExtension: `src/*.cpp,*.h`, `SConstruct`, сабмодуль `godot-cpp` 10.0.0-stable (api 4.7) |
 | `godot/` | Проект Godot: `addons/voxbody/` (`.gdextension`, `bin/`, шейдер, материал), `scenes/lab.tscn`, `scripts/`, `tests/`, `assets/models/*.vxm` (генерируется) |
@@ -87,7 +88,7 @@ godot --headless --audio-driver Dummy --path godot -s res://tests/run_tests.gd
    и оценить по чеклисту скилла `review-model-preview` до того, как отчитываться.
 4. **После любой правки в `godot/` или `src/voxbody/`** — `make test` (минимум headless-тесты);
    после правки сцены — попытаться `make screenshot` и посмотреть `build/lab.png`.
-5. **Никогда не коммитить `.vxm`, `.vox` и бинарники.** Не трогать `docs/design/` без просьбы владельца.
+5. **Никогда не коммитить `.vxm`, `.vox` и бинарники** (исключение — референсы владельца в `docs/reference/`). Не трогать `docs/design/` без просьбы владельца.
 6. Не оставлять TODO-заглушек там, где спека требует реализации. Невозможное — честно в отчёт.
 
 ## Где читать дальше

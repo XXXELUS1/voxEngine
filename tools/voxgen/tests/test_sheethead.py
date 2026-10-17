@@ -305,10 +305,10 @@ def test_skull_profile_from_the_map(head):
     assert at(s, 3.875, 5, 0.125) == MAT_SKIN and at(s, 4.125, 5, 0.125) == MAT_AIR         # cheek plane 8 wide
     assert at(s, 4.125, 5, 0.625) == MAT_SKIN                                                # 9 wide from z 0.5
     assert at(s, 4.875, 9, 6) == MAT_SKIN and at(s, 5.125, 9, 6) == MAT_AIR                 # sides 10 wide
-    for y, z in ((11.25, 0.5), (12.25, 1.5), (13.25, 2.5)):                                  # the 45-degree dome front
+    for y, z in ((11.25, 1.5), (12.25, 2.5), (13.25, 4.5)):                                  # the curved dome front (v3)
         assert at(s, 0.125, y, z + 0.125) == MAT_SKIN and at(s, 0.125, y, z - 0.125) == MAT_AIR
-    assert at(s, 2.375, 13.25, 6) == MAT_SKIN and at(s, 2.625, 13.25, 6) == MAT_AIR         # the dome: y 13..13.5 |x| < 2.5
-    assert at(s, 1.875, 13.75, 6.125) == MAT_SKIN and at(s, 2.125, 13.75, 6.125) == MAT_AIR  # ... y 13.5..14 |x| < 2
+    assert at(s, 1.875, 13.25, 6) == MAT_SKIN and at(s, 2.125, 13.25, 6) == MAT_AIR         # the dome: y 13..13.5 |x| < 2
+    assert at(s, 0.875, 13.75, 6.125) == MAT_SKIN and at(s, 1.125, 13.75, 6.125) == MAT_AIR  # ... y 13.5..14 |x| < 1
     assert at(s, 0.125, 14.25, 6) == MAT_AIR
     assert at(s, 0.125, 8.75, 12.875) == MAT_SKIN and at(s, 0.125, 8.75, 13.125) == MAT_AIR  # the back at z 13
     assert at(s, 0.125, 2.25, 11.875) == MAT_SKIN and at(s, 0.125, 2.25, 12.125) == MAT_AIR  # the occiput curves in (z 12 at y 2..2.5)

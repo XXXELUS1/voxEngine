@@ -55,30 +55,62 @@ def test_hair_styles_on_synthetic_skull(style):
     y_hl = lm["brow_y"] + HairParams.for_style(style).hairline_frac * (lm["head_top"] - lm["brow_y"])
     assert not (hair & (Z < -0.05) & (np.abs(X) < 0.04) & (Y < y_hl - 1e-6)).any()
     st = res.stats
-    if style in ("quiff", "messy"):
-        assert st["clumps"] > 0 and st["ridge"] == 0
+    if style == "quiff":
+        assert st["quiff"]["steps"] > 0 and st["quiff"]["spikes"] == 4 and st["clumps"] == 0 and st["ridge"] == 0
+    elif style == "messy":
+        assert st["clumps"] > 0 and st["ridge"] == 0 and "quiff" not in st
     else:
         assert st["ridge"] > 0 and st["clumps"] == 0
 
 
-def test_quiff_rises_above_the_base_and_floor_is_piecewise_flat():
+def test_quiff_is_a_leaning_stair_and_floor_is_piecewise_flat():
     grid, form, lm = synthetic_head()
-    plain = build_hair(form, grid, lm, "quiff", clumps=[])
+    plain = build_hair(form, grid, lm, "quiff", quiff=None)
     quiff = build_hair(form, grid, lm, "quiff")
     X, Y, Z = grid.centres()
     rise = float(Y[quiff.hair].max() - Y[plain.hair].max())
-    assert 0.04 <= rise <= 0.06                                        # 5 cm peaks over the base
-    assert quiff.stats["clumps"] == 6                                  # block + 5 peaks (mirrored)
+    assert 0.03 <= rise <= 0.06                                        # the shoulder 2 cm + three teeth steps
+    q = quiff.stats["quiff"]
+    assert q["steps"] >= 3 and q["spikes"] == 4 and q["stair"] > 0
+    # the front of the stair (centre column) is a 45-degree diagonal: every step row is set back
+    # exactly one step from the row below, and a step is two voxels tall at 5 mm; nothing hangs
+    # in front of it (no vertical front wall above the ledge)
+    H = quiff.hair
+    nz, ny, nx = H.shape
+    ix = nx // 2
+    y0, y1 = q["rows"]
+    top = int(np.nonzero(form[:, :, ix].any(axis=0))[0].max())        # the skull's top row: the stair is free above it
+    y0 = y0 + ((top + 1 - y0 + 1) // 2) * 2
+    front = [int(np.argmax(H[:, r, ix])) for r in range(y0, y1 + 1)]
+    assert len(front) >= 4
+    assert front[1::2] == front[0::2]                                  # pairs of rows share a step
+    assert all(b - a == 2 for a, b in zip(front[0::2], front[2::2]))   # one step (2 voxels) back per step up
+    # below, the stair hugs the round skull: hair right in front of the form on every row above the ledge
+    for r in range(q["rows"][0], y0):
+        if form[:, r, ix].any():
+            assert H[int(np.argmax(form[:, r, ix])) - 1, r, ix]
+    assert not (quiff.lit & ~H).any() and (quiff.lit & H & (Y > Y[plain.hair].max())).sum() > 0
     fl = hair_floor(X, Z, lm, HairParams.for_style("quiff"))
     assert len(np.unique(np.round(fl, 6))) <= 6                        # a handful of flat levels
-    one = build_hair(form, grid, lm, "quiff", clumps=[Clump(0.0, 0.02, 0.03, 0.03, 0.03, 0.0, 0.01, 0.01)])
-    assert one.stats["clumps"] == 1
+    one = build_hair(form, grid, lm, "quiff", quiff=None, clumps=[Clump(0.0, 0.02, 0.03, 0.03, 0.03, 0.0, 0.01, 0.01)])
+    assert one.stats["clumps"] == 1 and "quiff" not in one.stats
+
+
+def test_hairline_override_and_floor_quantum():
+    grid, form, lm = synthetic_head()
+    res = build_hair(form, grid, lm, "short", hairline_y=0.17, floor_quantum=0.01, temple_drop=0.01)
+    levels = sorted(set(np.round(np.unique(res.floor), 6).tolist()))
+    assert all(abs(v * 100 - round(v * 100)) < 1e-6 for v in levels)   # every level on a 1 cm row
+    X, Y, Z = grid.centres()
+    assert float(res.floor[0, 0, grid.dims[0] // 2]) == pytest.approx(0.17)   # the forehead at the given hairline
+    wide = build_hair(form, grid, lm, "short", ridge_period=4, ridge_width=2)
+    assert wide.stats["ridge"] > res.stats["ridge"]
 
 
 def test_hair_at_3mm_same_style():
     grid, form, lm = synthetic_head(0.003)
     res = build_hair(form, grid, lm, "quiff")
-    assert res.stats["voxel_mm"] == 3.0 and res.stats["clumps"] == 6
+    assert res.stats["voxel_mm"] == 3.0 and res.stats["quiff"]["spikes"] == 4
     labels, n = checks.label_components(res.hair)
     assert n == 1
 
@@ -130,7 +162,7 @@ def test_parts_checks_and_seams(quiff_dots, short_balls, quiff_balls_3mm):
 def test_hair_part_on_the_pocketed_scalp(quiff_dots):
     head, hair = quiff_dots.part("head"), quiff_dots.part("hair")
     b = quiff_dots.meta["build"]["hair"]
-    assert b["pocket"] > 0 and b["clumps"] == 6
+    assert b["pocket"] > 0 and b["quiff"]["steps"] >= 3 and b["quiff"]["spikes"] == 4
     hist = hair.material_histogram()
     assert set(hist) == {MAT_HAIR}
     pal = quiff_dots.palette

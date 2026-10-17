@@ -37,6 +37,29 @@ and draws the face at 5 mm with :mod:`voxgen.facedetail` (``fine_details``): hum
 one-row brows, a bridge ridge, nostril dots, a mouth line with lips, an ear spot - the same
 vocabulary as :mod:`voxgen.hybridhead`, so the two candidates differ only in the form.
 
+The ``box`` preset (owner's reference: a voxel-art character whose head is a *box with chamfered
+corners* - flat face plane, flat sides, box jaw, few big planes - and whose face is painted, not
+sculpted) is built by :func:`build_box_head`: the form is designed on an *even* 1 cm grid (no
+centre column, so the nose is a 2 cm block) as a chamfered cranium box (an SDF rounded box
+quantized at the centres: every chamfer is a 45-degree stair of whole design voxels, never a
+1-voxel terrace), one flat face plane (no cheek blocks, no socket recess), a narrower jaw box
+with the chin flush, a cylinder neck, the nose one 2 x 3 x 1 block one row above the mouth, the
+ears 1 x 3 x 2 blocks on the side planes. Everything else is colour on the 5 mm grid
+(:func:`paint_box_face`): a 2 x 8 mouth line (+ lower-lip row), two nostril voxels under the
+nose block, the shade tone on the row under the brows (a 2-row band under the sunglasses with
+``eyes="shades"``), on every under-face of the face (under the nose, the chin) and on the neck,
+6 x 2 brows in the hair tone with the outer third one row higher. Eyes: ``balls`` = 3 mm eyeball
+parts in carved sockets with a 4 x 2 window and a lid line (:func:`voxgen.refhead.carve_sockets`),
+``dots`` = 4 x 2 dark painted voxels, ``shades`` = a sunglasses part (MAT_GLASS) one fine voxel
+proud of the face plane spanning both eyes, wrapping the chamfered corners (the dots are
+painted under it, for when the glasses come off). Hair = a 5 mm part
+from :func:`voxgen.hairstyle.build_hair` on the box scalp (offsets of one design voxel, a box
+sweep, the floor snapped to 1 cm rows, the form carved one voxel under it): ``quiff`` (the 45
+degree stair), ``short`` (a 1 cm cap) / ``slick`` (receding temples, a 2 cm nape; no comb
+ridges, so the silhouette stays whole design voxels) or ``bald``. The model has the
+parts ``head``, ``eye_l`` / ``eye_r``, ``shades``, ``hair``; ``meta["mesh"]`` / ``meta["seams"]``
+carry the counts as the other multi-part heads.
+
 Decisions (the specs are silent on a designed head): design voxel = 2 fine voxels (fixed);
 the highlight is one design voxel (2x2 fine) on the same screen side for both eyes (colour only,
 so the material field stays mirror-symmetric); brows are painted (skin) when flush and MAT_HAIR
@@ -50,8 +73,10 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from . import materials as M
-from .body import shift
-from .facedetail import FaceDetailParams, FaceLandmarks, apply_face_details
+from . import meshvox
+from .body import dilate, exposed, shift
+from .facedetail import FaceDetailParams, FaceLandmarks, _cols, _rect, apply_face_details, front_face, hole_walls, x_coords
+from .hairstyle import HairParams, build_hair, ear_zone, hair_floor
 from .head_from_mesh import depth_map, keep_largest_component, upsample
 from .model import Model, Part
 from .palette import Palette
@@ -77,7 +102,19 @@ HAIR_TONES = {
 }
 IRIS_TONES = {"blue": (66, 118, 186), "brown": (96, 60, 38), "green": (74, 128, 84)}
 
-PRESETS = ("normal", "toon", "real")
+PRESETS = ("normal", "toon", "real", "box")
+BOX_EYES = ("balls", "dots", "shades")
+BOX_HAIR_STYLES = ("quiff", "short", "slick", "bald")
+#: hairstyle.HairParams overrides of the box preset (metres): one-design-voxel offsets, a box
+#: sweep (shape_power 8), floor levels snapped to 1 cm rows, temple / side boundaries on 1 cm
+#: columns, no one-voxel comb ridges (the silhouette stays whole design voxels)
+BOX_HAIR_COMMON = dict(top=0.01, side=0.01, back=0.01, ledge=0.01, shape_power=8.0, floor_quantum=0.01,
+                       temple_x=0.05, temple_drop=0.01, side_in=0.01, ear_clearance=0.02, sideburn_depth=0.02)
+BOX_HAIR = {
+    "quiff": dict(lit_band=0.04),                   # lit: the teeth and the crest only, the stair stays dark
+    "short": dict(ridges="", lit_band=0.02),
+    "slick": dict(back=0.02, nape_drop=0.01, temple_drop=-0.01, ridges=""),   # swept back: receding temples, long nape
+}
 #: ear_size -> (width, height) of the ear block in design voxels (depth is always 2)
 EAR_SIZES = {1: (1, 3), 2: (2, 4), 3: (1, 5)}
 HAIR_STYLES = ("short", "bangs", "bald")
@@ -155,6 +192,26 @@ class ToonHeadParams:
     fine_eye_x: float = 5.5          # |X| of the eye centres in fine voxels (half-integer)
     fine_mouth_half_w: float = 5.5   # |X| of the mouth corners in fine voxels
     detail: FaceDetailParams = field(default_factory=FaceDetailParams)
+    # -- the ``box`` preset (ignored by the others): chamfered box form on an even grid, the face
+    # painted at 5 mm, eyes as parts / dots / sunglasses, hair as a voxgen.hairstyle part
+    eyes: str = "coarse"             # box: "balls" | "dots" | "shades"
+    cranium_y0: int = 6              # bottom row of the cranium box (its chamfer hides behind the jaw)
+    cranium_round: float = 2.0       # chamfer radius of the cranium box (design voxels)
+    jaw_round: float = 1.0           # chamfer radius of the jaw box
+    mouth_half_cols: float = 3.5     # fine |X| of the outer mouth column (3.5 -> 8 columns = 4 cm)
+    lower_lip: bool = True           # one lip-tone row under the mouth line
+    brow_shade_rows: int = 1         # fine rows of the shade band under the brows
+    shade_rows: int = 2              # fine rows of the shade band under the sunglasses
+    shades_rows: int = 3             # sunglasses height in design rows, from eye_y - 1 upward
+    shades_half_w: float = 6.0       # sunglasses half-width in design voxels
+    hair: dict = field(default_factory=dict)   # hairstyle.HairParams overrides
+    eye_radius: float = 0.0095       # eyeball parts (see voxgen.refhead.carve_sockets)
+    iris_radius: float = 0.005
+    pupil_radius: float = 0.0022
+    eye_voxel: float = 0.003
+    eye_protrude: float = 0.0        # the ball's front pole this far in front of the face plane
+    eye_open_cols: int = 4           # socket window in fine columns x rows
+    eye_open_rows: int = 2
 
     @classmethod
     def preset_params(cls, preset: str = "normal", **overrides) -> "ToonHeadParams":
@@ -163,7 +220,9 @@ class ToonHeadParams:
         proportions - eyes at mid-height, one eye width apart, mouth as wide as the pupils are
         apart, nose base a third of the way from the eyes to the chin, ears from brow to nose
         base - with a moderate caricature: nose x1.3, heavier brow step, defined jaw and a wide
-        chin, a boxier cranium, and the 5 mm fine-detail face instead of the big coarse eyes)."""
+        chin, a boxier cranium, and the 5 mm fine-detail face instead of the big coarse eyes)
+        and ``box`` (the reference: the proportions of ``real`` on a 14 x 23 x 18 cm chamfered
+        box, the face painted, eyes ``balls`` and hair ``quiff`` by default; see the module doc)."""
         if preset not in PRESETS:
             raise ValueError(f"unknown preset {preset!r}, expected one of {PRESETS}")
         p = cls(preset=preset)
@@ -184,6 +243,13 @@ class ToonHeadParams:
                 eye_y=11, eye_x=2, eye_w=3, eye_h=2, brow_y=13, brow_w=4, ear_y=8, ear_size=3, ear_z=7,
                 hair_style="short", hair_thick=2, hair_side=1, hair_back=2, hairline_y=17, clumps=False,
                 cheeks=True, fine_details=True)
+        elif preset == "box":
+            p = replace(
+                p, cranium_w=14, cranium_h=17, cranium_d=18, head_h=23, face_w=14, jaw_w=12, jaw_h=10, jaw_d=14,
+                jaw_z=0, chin=0, neck_r=4.0, neck_rows=3, mouth_y=5, nose_y=7, nose_w=2, nose_h=3, nose_d=1,
+                eye_y=11, eye_x=2, eye_w=2, eye_h=1, brow_y=13, ear_y=9, ear_size=1, ear_z=7,
+                hair_style="quiff", hairline_y=17, eyes="balls", hair_tone="black", iris_tone="brown",
+                fine_eye_x=6.0, cheeks=False)
         return replace(p, **overrides)
 
     def resolved_expression(self) -> tuple[int, int, bool]:
@@ -202,11 +268,13 @@ class Design:
     """Coarse design volume: materials + colour indices on the 1 cm grid, with integer
     centre coordinates ``X`` (mirrored about 0), ``Y`` (0 = chin row), ``Z`` (0 = face plane)."""
 
-    def __init__(self, half_w: int, rows_below: int, rows_above: int, front: int, depth: int):
+    def __init__(self, half_w: int, rows_below: int, rows_above: int, front: int, depth: int, even: bool = False):
+        """``even``: no centre column, the columns sit at half-integer x (the box preset)."""
         self.hx, self.y0, self.z0 = int(half_w), int(rows_below), int(front)
-        nx, ny, nz = 2 * self.hx + 1, self.y0 + int(rows_above), self.z0 + int(depth)
+        self.even = bool(even)
+        nx, ny, nz = 2 * self.hx + (0 if even else 1), self.y0 + int(rows_above), self.z0 + int(depth)
         self.shape = (nz, ny, nx)
-        self.X = (np.arange(nx) - self.hx)[None, None, :]
+        self.X = (np.arange(nx) - self.hx + (0.5 if even else 0.0))[None, None, :]
         self.Y = (np.arange(ny) - self.y0)[None, :, None]
         self.Z = (np.arange(nz) - self.z0)[:, None, None]
         self.mat = np.zeros(self.shape, np.uint8)
@@ -215,9 +283,10 @@ class Design:
         self.beard = np.zeros(self.shape, bool)
 
     # -- primitives (bool masks of the full shape) ----------------------------
-    def box(self, x0: int, x1: int, y0: int, y1: int, z0: int, z1: int, r: float = 0.0) -> np.ndarray:
-        """Axis box with inclusive integer bounds on voxel centres, edges rounded by ``r``
-        (an SDF rounded box quantized at the centres: regular steps, mirror-exact)."""
+    def box(self, x0: float, x1: float, y0: int, y1: int, z0: int, z1: int, r: float = 0.0) -> np.ndarray:
+        """Axis box with inclusive bounds on voxel centres (half-integers on an even grid),
+        edges rounded by ``r`` (an SDF rounded box quantized at the centres: regular steps,
+        mirror-exact; r = 1 cuts the edge voxel, r = 2 a two-step 45-degree chamfer)."""
         X, Y, Z = self.X, self.Y, self.Z
         inside = (X >= x0) & (X <= x1) & (Y >= y0) & (Y <= y1) & (Z >= z0) & (Z <= z1)
         if r <= 0:
@@ -277,7 +346,17 @@ def make_palette(p: ToonHeadParams) -> Palette:
     pal.add("lips", tuple(int(round(0.58 * a + 0.42 * b)) for a, b in zip(skin, (168, 70, 78))))
     pal.add("line", (88, 54, 52))
     pal.add("hair", hair)
+    if p.preset == "box":
+        # the reference's tones: lighter top faces, a deep underside, soft lip, dark eye dots / lenses
+        hair_light = tuple(int(round(0.7 * h + 0.3 * w)) for h, w in zip(hair, (255, 250, 245)))
     pal.add("hair_light", hair_light)
+    if p.preset == "box":
+        pal.add("hair_deep", tuple(int(round(c * 0.62)) for c in hair))
+        lips = tuple(int(round(0.58 * a + 0.42 * b)) for a, b in zip(skin, (168, 70, 78)))
+        pal.add("lip_soft", tuple(int(round(0.5 * a + 0.5 * b)) for a, b in zip(skin, lips)))
+        pal.add("eye_dark", (34, 28, 32))
+        pal.add("pupil", (24, 22, 30))
+        pal.add("shade_dark", (26, 24, 28))
     pal.add("eye_white", (242, 242, 236))
     pal.add("iris", IRIS_TONES.get(p.iris_tone, IRIS_TONES["blue"]))
     pal.add("highlight", (248, 250, 252))
@@ -470,6 +549,8 @@ def build_toon_head(params: ToonHeadParams | None = None, fine_voxel: float = 0.
     p = params if params is not None else ToonHeadParams()
     if abs(fine_voxel * UPSAMPLE - 0.01) > 1e-9:
         raise ValueError("build_toon_head designs at 1 cm = 2 fine voxels: fine_voxel must be 0.005")
+    if p.preset == "box":
+        return build_box_head(p, fine_voxel, name)
     d = design_head(p)
     pal = make_palette(p)
     C = pal.index
@@ -509,4 +590,229 @@ def build_toon_head(params: ToonHeadParams | None = None, fine_voxel: float = 0.
     model.meta["crumbs_removed"] = keep_largest_component(part)
     if details:
         model.meta["details"] = details
+    return model
+
+
+# ---------------------------------------------------------------------------- the box preset
+def design_box_head(p: ToonHeadParams) -> Design:
+    """The ``box`` form on the even 1 cm grid: a chamfered cranium box, one flat face plane, a
+    narrower jaw box (chin flush, its chamfer the only step under the face), a cylinder neck,
+    the nose one block, the ears blocks flush on the side planes. Nothing is painted here."""
+    pal = make_palette(p)
+    C = pal.index
+    for key in ("cranium_w", "jaw_w", "nose_w"):
+        if int(getattr(p, key)) % 2:
+            raise ValueError(f"box preset: {key} must be even (the design grid has no centre column)")
+    hx = p.cranium_w // 2                                 # columns at +-0.5 .. +-(hx - 0.5)
+    crown = p.head_h - 1
+    ear_w, ear_h = EAR_SIZES[max(1, min(p.ear_size, max(EAR_SIZES)))]
+    d = Design(hx + ear_w + 2, p.neck_rows, p.head_h + 12, max(p.nose_d, 1) + 2, p.cranium_d + 4, even=True)   # 12 rows of hair room
+    skin = d.box(-hx + 0.5, hx - 0.5, p.cranium_y0, crown, 0, p.cranium_d - 1, p.cranium_round)
+    jx = p.jaw_w // 2
+    skin |= d.box(-jx + 0.5, jx - 0.5, 0, p.jaw_h - 1, p.jaw_z, p.jaw_z + p.jaw_d - 1, p.jaw_round)
+    skin |= d.cylinder_y((p.cranium_d - 1) / 2, p.neck_r, -p.neck_rows, p.jaw_h - 1)
+    d.set(skin, M.MAT_SKIN, C("skin"))
+    nxh = p.nose_w / 2
+    nose = d.box(-nxh + 0.5, nxh - 0.5, p.nose_y, p.nose_y + p.nose_h - 1, -p.nose_d, -1)
+    d.set(nose & ~d.solid(), M.MAT_SKIN, C("skin"))
+    d.cartilage |= nose
+    ear = d.mirror(d.box(hx + 0.5, hx + ear_w - 0.5, p.ear_y, p.ear_y + ear_h - 1, p.ear_z, p.ear_z + 1))
+    d.set(ear & ~d.solid(), M.MAT_SKIN, C("skin"))
+    d.cartilage |= ear
+    return d
+
+
+def paint_box_face(mat: np.ndarray, col: np.ndarray, p: ToonHeadParams, d: Design, C) -> dict[str, int]:
+    """Colour-only features on the skin of the fine box form (in place): mouth line, lower lip,
+    nostrils, the shade band, the under-faces and the neck in the shade tone, brows, eye dots."""
+    nz, ny, nx = mat.shape
+    k = UPSAMPLE
+    X = x_coords(nx)
+    fy = lambda y: k * (int(y) + d.y0)                     # lower fine row of a design row
+    fz = lambda z: k * (int(z) + d.z0)                     # front fine z index of a design z
+    skin = mat == M.MAT_SKIN
+    filled = mat != M.MAT_AIR
+    front = front_face(filled) & skin
+    face_cols = _cols(X, 0, (p.cranium_w // 2) * k)
+    stats: dict[str, int] = {}
+    ex = float(p.fine_eye_x)
+    ey = fy(p.eye_y) + 1                                   # top row of the eye window
+
+    my = fy(p.mouth_y)
+    mouth = front & _rect(mat.shape, _cols(X, 0, p.mouth_half_cols), my, my + 1)
+    col[mouth] = C("line")
+    stats["mouth"] = int(mouth.sum())
+    if p.lower_lip:
+        lip = front & _rect(mat.shape, _cols(X, 0, p.mouth_half_cols - 1), my - 1, my - 1)
+        col[lip] = C("lip_soft")
+        stats["lower_lip"] = int(lip.sum())
+
+    nxo = p.nose_w / 2 * k - 0.5                           # the nose block's outer fine columns
+    nostril = front & _rect(mat.shape, _cols(X, nxo, nxo), fy(p.nose_y) - 1, fy(p.nose_y) - 1)
+    col[nostril] = C("line")
+    stats["nostril"] = int(nostril.sum())
+
+    # the shade band under the brows (under the sunglasses), the under-faces of the face, the neck
+    n_band = p.shade_rows if p.eyes == "shades" else p.brow_shade_rows
+    b0 = (fy(p.eye_y - 1) if p.eyes == "shades" else fy(p.brow_y)) - n_band
+    shade = front & face_cols[None, None, :] & _rect(mat.shape, _cols(X, 0, 1e9), b0, b0 + n_band - 1)
+    stats["band"] = int(shade.sum())
+    zi = np.arange(nz)[:, None, None]
+    rows = np.arange(ny)[None, :, None]
+    under = skin & ~shift(filled, 0, 1, 0) & (zi < fz(p.ear_z)) & (rows >= fy(0)) & (rows <= fy(p.brow_y))
+    shade |= under
+    shade |= exposed(filled) & skin & (rows < fy(0))
+    shade &= col == C("skin")
+    col[shade] = C("skin_shadow")
+    stats["shade"] = int(shade.sum())
+
+    if p.eyes != "shades":
+        b = fy(p.brow_y)
+        inner = _cols(X, ex - 2.5, ex + 0.5)
+        outer = _cols(X, ex + 1.5, ex + 2.5)
+        brow = front & (_rect(mat.shape, inner, b, b + 1) | _rect(mat.shape, outer, b + 1, b + 2))
+        col[brow] = C("hair")
+        stats["brow"] = int(brow.sum())
+    if p.eyes in ("dots", "shades"):
+        dots = front & _rect(mat.shape, _cols(X, ex - 1.5, ex + 1.5), ey - 1, ey)
+        col[dots] = C("eye_dark")
+        stats["eye_dots"] = int(dots.sum())
+    return stats
+
+
+def box_hair_params(p: ToonHeadParams) -> HairParams:
+    """The hair of the box preset: the style's defaults, the box overrides, the hairline on
+    its design row, then the spec's ``hair`` overrides."""
+    over = {**BOX_HAIR_COMMON, **BOX_HAIR[p.hair_style], "hairline_y": p.hairline_y * UPSAMPLE * 0.005, **p.hair}
+    return HairParams.for_style(p.hair_style, **over)
+
+
+def build_box_head(p: ToonHeadParams, fine_voxel: float = 0.005, name: str | None = None) -> Model:
+    """The ``box`` preset: the designed form upsampled x2, the hair part on its scalp (the form
+    carved one voxel under it), the eye sockets, the tissues by depth, the painted face, the
+    sunglasses part. Parts ``head`` (+ ``eye_l`` / ``eye_r``, ``shades``, ``hair``) in the local
+    frame of the other heads: metres, chin at y = 0, centred on x / z, face toward -Z."""
+    from .multires_head import backfill_z, crop_part, mesh_stats, resample, seam_stats
+    from .refhead import carve_sockets
+    if p.eyes not in BOX_EYES:
+        raise ValueError(f"box preset: eyes must be one of {BOX_EYES}, got {p.eyes!r}")
+    if p.hair_style not in BOX_HAIR_STYLES:
+        raise ValueError(f"box preset: hair_style must be one of {BOX_HAIR_STYLES}, got {p.hair_style!r}")
+    d = design_box_head(p)
+    pal = make_palette(p)
+    C = pal.index
+    k = UPSAMPLE
+    vs = fine_voxel
+    mat = upsample(d.mat, k)
+    col = upsample(d.col, k)
+    cart = upsample(d.cartilage, k)
+    nz, ny, nx = mat.shape
+    origin = (-nx * vs / 2, -d.y0 * k * vs, -nz * vs / 2)
+    grid = meshvox.VoxelGrid(origin, vs, (nx, ny, nz))
+    X, Y, Z = grid.centres()
+    form = mat != M.MAT_AIR
+    fy = lambda y: k * (int(y) + d.y0)
+    zm = lambda z: origin[2] + k * (int(z) + d.z0) * vs   # metre z of the front face of a design z
+    ear_h = EAR_SIZES[max(1, min(p.ear_size, max(EAR_SIZES)))][1]
+    cm = k * vs
+    eye_y = origin[1] + (fy(p.eye_y) + 1) * vs
+    lm = {"brow_y": p.brow_y * cm, "head_top": p.head_h * cm, "ear_z": (zm(p.ear_z), zm(p.ear_z + 2)),
+          "ear_y": (p.ear_y * cm, (p.ear_y + ear_h) * cm), "ear_inner_x": (p.cranium_w // 2) * cm,
+          "eye_x": p.fine_eye_x * vs, "eye_l": (-p.fine_eye_x * vs, eye_y, zm(0)), "eye_r": (p.fine_eye_x * vs, eye_y, zm(0))}
+    stats: dict = {}
+
+    # ---- hair on the scalp, the pocket one voxel deep under it
+    hair = None
+    hres = None
+    if p.hair_style != "bald":
+        hres = build_hair(form, grid, lm, box_hair_params(p))
+        hair = hres.hair
+        floor = hair_floor(X, Z, lm, hres.params)
+        under = form & dilate(hair) & (Y >= floor) & ~ear_zone(X, Y, Z, lm)
+        pocket = under | under[:, :, ::-1]
+        form &= ~pocket
+        hair |= pocket
+        stats["hair"] = dict(hres.stats, pocket=int(pocket.sum()))
+
+    # ---- sockets (before the tissues, so their walls are skin)
+    balls: dict = {}
+    inner = np.zeros(form.shape, bool)
+    if p.eyes == "balls":
+        form, balls, inner = carve_sockets(form, grid, lm, p, C)
+    mat = np.where(form, mat, np.uint8(0)).astype(np.uint8)
+    col = np.where(form, col, np.uint8(0)).astype(np.uint8)
+
+    # ---- tissues by depth, then the painted face (colour only)
+    depth = depth_map(form)
+    skin = mat == M.MAT_SKIN
+    for lvl, material, colour in ((2, M.MAT_FAT, "fat"), (3, M.MAT_MUSCLE, "muscle")):
+        sel = skin & (depth == lvl)
+        mat[sel], col[sel] = material, C(colour)
+    sel = skin & (depth >= 4)
+    mat[sel], col[sel] = M.MAT_BONE, C("bone")
+    sel = skin & cart & (depth >= 2)
+    mat[sel], col[sel] = M.MAT_CARTILAGE, C("cartilage")
+    stats["face"] = paint_box_face(mat, col, p, d, C)
+    skin = mat == M.MAT_SKIN
+    if inner.any():
+        col[hole_walls(inner, skin)] = C("line")
+    if p.eyes == "balls":
+        Xf = x_coords(nx)
+        ey = fy(p.eye_y) + 1
+        half = (p.eye_open_cols - 1) / 2
+        lid = front_face(form) & skin & _rect(form.shape, _cols(Xf, p.fine_eye_x - half, p.fine_eye_x + half), ey + 1, ey + 1)
+        col[lid] = C("line")
+        stats["face"]["lid"] = int(lid.sum())
+
+    model = Model(name or f"styl_{p.preset}", vs, pal,
+                  meta={"generator": "toonhead", "preset": p.preset, "design_voxel_m": cm, "eyes": p.eyes,
+                        "hair_style": p.hair_style})
+    head = Part("head", (nx, ny, nz), vs, origin=origin, bone="head", symmetric=True)
+    head.material[:] = mat
+    head.color[:] = col
+    model.add_part(head)
+    model.meta["crumbs_removed"] = keep_largest_component(head)
+    zero = (0.0, 0.0, 0.0)
+
+    # ---- eyeballs with their stalks (as voxgen.refhead)
+    for key, (egrid, emat, ecol, ball, centre) in balls.items():
+        form_e = resample(form, grid, egrid)
+        Xe, Ye, Ze = egrid.centres()
+        vse = egrid.voxel_size
+        axis = (np.abs(Xe - centre[0]) <= vse) & (np.abs(Ye - centre[1]) <= vse)
+        back = ball & ~shift(ball, 0, 0, -1) & axis & (Ze > centre[2])
+        stalk = backfill_z(back, form_e, 8) & ~ball
+        emat[stalk] = M.MAT_EYE
+        ecol[stalk] = C("eye_white")
+        model.add_part(crop_part(key, egrid, emat, ecol, zero, key, False))
+        stats[key] = {"ball": int(ball.sum()), "stalk": int(stalk.sum())}
+
+    # ---- sunglasses: one fine voxel proud of the front face, eye_y - 1 .. + shades_rows design rows
+    if p.eyes == "shades":
+        Xf = x_coords(nx)
+        y0 = fy(p.eye_y - 1)
+        rect = _rect(form.shape, _cols(Xf, 0, p.shades_half_w * k - 0.5), y0, y0 + p.shades_rows * k - 1)
+        ff = front_face(form) & rect
+        has = ff.any(axis=0)                                   # (ny, nx)
+        zfront = np.where(has, np.argmax(ff, axis=0), nz)      # the face's front z per column
+        zi = np.arange(nz)[:, None, None]
+        # one voxel proud of the flattest part; at the chamfered corners the lenses wrap: filled
+        # from that plane back to the local front (so the part stays one piece)
+        block = rect & has[None] & (zi >= int(zfront[has].min()) - 1) & (zi < zfront[None]) & ~form
+        smat = np.where(block, M.MAT_GLASS, 0).astype(np.uint8)
+        scol = np.where(block, C("shade_dark"), 0).astype(np.uint8)
+        model.add_part(crop_part("shades", grid, smat, scol, zero, "head", True))
+        stats["shades"] = int(block.sum())
+
+    # ---- the hair part: base, lit top faces, deep undersides / nape
+    if hair is not None:
+        hmat = np.where(hair, M.MAT_HAIR, 0).astype(np.uint8)
+        hcol = np.where(hair, C("hair"), 0).astype(np.uint8)
+        hcol[hres.deep & hair] = C("hair_deep")
+        hcol[hres.lit & hair] = C("hair_light")
+        model.add_part(crop_part("hair", grid, hmat, hcol, zero, "head", True))
+
+    model.meta["build"] = stats
+    model.meta["seams"] = seam_stats(model)
+    model.meta["mesh"] = mesh_stats(model)
     return model

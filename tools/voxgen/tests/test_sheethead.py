@@ -311,7 +311,7 @@ def test_skull_profile_from_the_map(head):
     assert at(s, 0.875, 13.75, 6.125) == MAT_SKIN and at(s, 1.125, 13.75, 6.125) == MAT_AIR  # ... y 13.5..14 |x| < 1
     assert at(s, 0.125, 14.25, 6) == MAT_AIR
     assert at(s, 0.125, 8.75, 12.875) == MAT_SKIN and at(s, 0.125, 8.75, 13.125) == MAT_AIR  # the back at z 13
-    assert at(s, 0.125, 2.25, 11.875) == MAT_SKIN and at(s, 0.125, 2.25, 12.125) == MAT_AIR  # the occiput curves in (z 12 at y 2..2.5)
+    assert at(s, 0.125, 2.25, 11.375) == MAT_SKIN and at(s, 0.125, 2.25, 11.625) == MAT_AIR  # the occiput curves in (z 11.5 at y 2..2.5)
     assert at(s, 0.125, -1, 5.625) == MAT_SKIN and at(s, 0.125, -1, 5.625, "color") == head.palette.index("skin_shadow")
     assert at(s, 0.125, -1, 5.375) == MAT_AIR and at(s, 0.125, -1, 11.625) == MAT_AIR        # neck z 5.5..11.5
     assert at(s, 0.125, -1, 11.375) == MAT_SKIN and at(s, 0.125, -1, 8) != MAT_AIR     # back face, solid inside

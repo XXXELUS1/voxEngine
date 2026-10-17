@@ -96,7 +96,7 @@ FACE = dict(
     paint={"K": "eye_frame", "W": "eye_white", "P": "pupil", "s": "skin_light", "d": "skin_shadow",
            "_": "skin", "b": "hair_black", "m": "hair_black"},
     recess={"K": 0.5, "W": 0.5, "P": 0.5, "_": 0.5},
-    materials={"b": "MAT_HAIR", "m": "MAT_HAIR", "K": "MAT_SKIN", "W": "MAT_EYE", "P": "MAT_EYE"},
+    materials={"b": "MAT_HAIR", "m": "MAT_HAIR", "K": "MAT_EYE", "W": "MAT_EYE", "P": "MAT_EYE"},
     rows=[
         "................",  # y 9.75-10  forehead
         "................",

@@ -19,8 +19,8 @@ import numpy as np
 
 from voxgen import materials as M
 
-STYLES = ("cubes", "bevel", "facet", "facet_all", "slopes", "smooth", "clay", "toon", "mix")
-PART_STYLES = ("cubes", "bevel", "facet", "facet_all", "slopes", "smooth", "clay")  # toon is model-wide (EEVEE)
+STYLES = ("cubes", "bevel", "facet", "facet_all", "slopes", "lowpoly", "smooth", "clay", "toon", "mix")
+PART_STYLES = ("cubes", "bevel", "facet", "facet_all", "slopes", "lowpoly", "smooth", "clay")  # toon is model-wide (EEVEE)
 LIGHTS = ("studio", "candle")
 BACKGROUNDS = ("dark", "grey", "light")
 SMOOTH_CLAMPS = ("cell", "free")

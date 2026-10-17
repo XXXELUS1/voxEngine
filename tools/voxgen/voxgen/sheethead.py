@@ -467,9 +467,14 @@ def finish_skull(bd: Builder, part: Part) -> Block:
     part.material[~form] = 0
     part.color[~form] = 0
     layer_tissues(part, form, HEAD_BANDS, bd.pal.index)
+    ears = np.zeros(f.shape, bool)
+    for b in EARS:
+        ears |= f.mask(b)
+    part.material[ears & form] = M.MAT_CARTILAGE   # ears stay cubic in the smooth/lowpoly renders
     bd.recolor(part, f.full(f.Y < 0), NECK_TONE)
     bd.recolor(part, dilate(notches, 1) & ~notches, NOTCH_TONE)     # the notch's floor and walls
     bd.recolor(part, slit, LIP_TONE)                                  # the mouth line on the closed lips
+    part.material[slit & part.solid()] = M.MAT_CARTILAGE             # ... kept cubic in the smooth/lowpoly renders
     for k in TEETH_X:
         bd.place(part, Block(k / FINE, (k + TOOTH_W) / FINE, cavity.y0, cavity.y1, cavity.z1 - TOOTH_DEPTH,
                              cavity.z1, "tooth", M.MAT_TOOTH), clip=False)

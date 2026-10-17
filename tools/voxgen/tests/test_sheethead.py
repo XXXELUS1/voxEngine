@@ -14,7 +14,7 @@ import pytest
 
 from voxgen import checks
 from voxgen.blockhead import U_M, Block, Builder, Frame, make_palette
-from voxgen.materials import (MAT_AIR, MAT_CLOTH, MAT_EYE, MAT_FAT, MAT_HAIR, MAT_MUSCLE, MAT_PLANT, MAT_SKIN,
+from voxgen.materials import (MAT_AIR, MAT_CLOTH, MAT_EYE, MAT_FAT, MAT_HAIR, MAT_MUSCLE, MAT_PLANT, MAT_CARTILAGE, MAT_SKIN,
                               MAT_TOOTH)
 from voxgen.sheethead import (CAVITY_X, CAVITY_Y, DEFAULT_MAPS, EAR_NOTCHES, EARS, LIP_THICK, SKULL_MID_Z, TEETH_X,
                               apply_layer, build_head, build_parts, cell_box, dilate, fills, footprint,
@@ -322,11 +322,11 @@ def test_ears_mouth_and_nostrils(head):
     s, pal = head.part("skull"), head.palette
     skin, shadow = pal.index("skin"), pal.index("skin_shadow")
     for sx in (-1, 1):                                   # ears |x| 5..6, z 7..10, y 4..7, with the notch
-        assert at(s, sx * 5.75, 4.125, 7.5) == MAT_SKIN and at(s, sx * 5.75, 4.125, 7.5, "color") == skin   # bottom
-        assert at(s, sx * 5.875, 4.5, 7.5) == MAT_SKIN and at(s, sx * 5.875, 4.5, 7.5, "color") == skin   # outer face
+        assert at(s, sx * 5.75, 4.125, 7.5) == MAT_CARTILAGE and at(s, sx * 5.75, 4.125, 7.5, "color") == skin   # bottom (ears are cartilage: cubic in the smooth renders)
+        assert at(s, sx * 5.875, 4.5, 7.5) == MAT_CARTILAGE and at(s, sx * 5.875, 4.5, 7.5, "color") == skin   # outer face
         assert at(s, sx * 5.25, 5.5, 7.125) != MAT_AIR and at(s, sx * 6.125, 4.5, 7.5) == MAT_AIR
         assert at(s, sx * 5.75, 5.5, 8.5) == MAT_AIR                                          # the notch void
-        assert at(s, sx * 5.375, 5.5, 8.5) == MAT_SKIN and at(s, sx * 5.375, 5.5, 8.5, "color") == shadow   # floor
+        assert at(s, sx * 5.375, 5.5, 8.5) == MAT_CARTILAGE and at(s, sx * 5.375, 5.5, 8.5, "color") == shadow   # floor
         assert at(s, sx * 5.75, 5.5, 7.875) == MAT_SKIN and at(s, sx * 5.75, 5.5, 7.875, "color") == shadow  # wall
         assert at(s, sx * 5.75, 6.125, 8.5, "color") == shadow and at(s, sx * 5.75, 6.375, 8.5, "color") == skin
     # the mouth: 5 U wide, 1 U deep from the face plane behind closed lips (1 fine of skin, the mouth
@@ -355,8 +355,8 @@ def test_ears_mouth_and_nostrils(head):
 def test_face_features(head):
     s, beard, pal = head.part("skull"), head.part("beard"), head.palette
     # the eyes: 2 fine cut, the frame / white / pupil painted on the new front-most voxel, skin behind it
-    for x, colour, mat in ((-3.375, "eye_frame", MAT_SKIN), (-2.875, "eye_white", MAT_EYE), (-2.125, "pupil", MAT_EYE),
-                           (2.125, "pupil", MAT_EYE), (3.375, "eye_frame", MAT_SKIN)):
+    for x, colour, mat in ((-3.375, "eye_frame", MAT_EYE), (-2.875, "eye_white", MAT_EYE), (-2.125, "pupil", MAT_EYE),
+                           (2.125, "pupil", MAT_EYE), (3.375, "eye_frame", MAT_EYE)):
         assert at(s, x, 6.625, 0.125) == MAT_AIR and at(s, x, 6.625, 0.375) == MAT_AIR
         assert at(s, x, 6.625, 0.625) == mat and at(s, x, 6.625, 0.625, "color") == pal.index(colour), x
         assert at(s, x, 6.625, 0.875) == MAT_SKIN
@@ -414,9 +414,9 @@ def test_bald_is_the_skull_and_face_alone(bald, head):
     assert mirrored(s) and mirrored(s, "color") and exposed_tissue(s) == 0
     report = checks.run(bald)
     assert report["errors"] == [] and [w for w in report["warnings"] if "enclosed air pocket" not in w] == []
-    assert at(s, 0.125, 3.625, 0.125) == MAT_SKIN and at(s, 0.125, 3.5, -0.125) == MAT_AIR   # the closed lips show
+    assert at(s, 0.125, 3.625, 0.125) == MAT_CARTILAGE and at(s, 0.125, 3.5, -0.125) == MAT_AIR   # the closed lips show (the slit row is cubic cartilage)
     assert at(s, 0.125, 3.625, 0.125, "color") == bald.palette.index("skin_shadow")            # ... with the mouth line
     assert at(s, 0.125, 3.5, 0.625) == MAT_AIR and at(s, 0.125, 3.5, 0.875) == MAT_TOOTH      # teeth hidden behind
     assert at(s, -2, 8.5, -0.25) == MAT_HAIR                                                 # brows stay
-    assert at(s, 0.125, 5, -1.875) == MAT_SKIN and at(s, 5.75, 4.5, 7.5) == MAT_SKIN
+    assert at(s, 0.125, 5, -1.875) == MAT_SKIN and at(s, 5.75, 4.5, 7.5) == MAT_CARTILAGE
     assert np.array_equal(s.material, head.part("skull").material)                           # the same skull

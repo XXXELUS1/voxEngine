@@ -57,7 +57,10 @@ from voxgen.blender import (BACKGROUNDS, LIGHTS, SMOOTH_CLAMPS, STYLES, VIEWS, p
 SMOOTH_STYLES = ("smooth", "clay", "toon")
 FACET_STYLES = ("facet", "facet_all")
 SLOPE_STYLES = ("slopes",)
-FLAT_STYLES = FACET_STYLES + SLOPE_STYLES  # one flat material per palette colour, jitter 0
+LOWPOLY_STYLES = ("lowpoly",)   # surface nets + light Laplacian, then quadric collapse to a few flat facets
+FLAT_STYLES = FACET_STYLES + SLOPE_STYLES + LOWPOLY_STYLES  # one flat material per palette colour, jitter 0
+LOWPOLY_PASSES = 14             # Laplacian passes before the collapse (free: the 1/2 U design steps melt into a curve)
+LOWPOLY_RATIO = 0.06            # Decimate(collapse) face ratio: the low-poly look of the owner's bald reference
 SMOOTH_DEFAULTS = {"passes": 2, "clamp": "cell", "inflate": 0.0, "jitter": 0.04,  # jitter: 0 in mix (flat skin)
                    "hermite": None, "hermite_passes": 0}  # hermite None = when the part has the sdf field
 # background preset -> (world bottom, world top, world strength), ground colour, exposure
@@ -541,6 +544,14 @@ def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float |
                                   hermite=bool(hermite), hermite_passes=int(smooth["hermite_passes"]))
             if m.hermite:
                 hermite_parts.append(part.name or f"part{i}")
+        elif style in LOWPOLY_STYLES:
+            # the low-poly look of the owner's bald-head reference: nets vertices sit at the cell
+            # centres of the binary field (no Laplacian, no Hermite), flat shading, then Blender's
+            # planar dissolve merges the near-coplanar strips of a staircase into one facet
+            m = mesh.surface_nets(part, model.palette, smooth_passes=LOWPOLY_PASSES,
+                                  keep_cubic_materials=tuple(cubic_materials), clamp="free", inflate=0.0, jitter=0.0,
+                                  hermite=False, hermite_passes=0)
+            m.face_smooth[:] = False
         elif style in SLOPE_STYLES:
             j = jitter if jitter is not None else 0.0
             st = {}
@@ -558,6 +569,12 @@ def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float |
         faces += m.n_faces
         if style in SLOPE_STYLES:
             assign_palette_materials(ob, m, mat_cache)
+        if style in LOWPOLY_STYLES:
+            assign_palette_materials(ob, m, mat_cache)
+            mod = ob.modifiers.new("LowPoly", "DECIMATE")
+            mod.decimate_type = "COLLAPSE"
+            mod.ratio = LOWPOLY_RATIO
+            mod.use_collapse_triangulate = True
         if style in FACET_STYLES:
             assign_palette_materials(ob, m, mat_cache)
             ew = mesh.step_edge_weights(m, part, mode="all" if style == "facet_all" else "steps", min_run=2,

@@ -54,6 +54,7 @@ import bpy  # noqa: E402
 from mathutils import Vector  # noqa: E402
 
 from voxgen import io_vxm, mesh, mesh_slopes  # noqa: E402
+from voxgen import materials as M  # noqa: E402
 from voxgen.blender import (BACKGROUNDS, LIGHTS, SMOOTH_CLAMPS, STYLES, VIEWS, parse_part_styles,  # noqa: E402
                             resolve_part_styles)
 
@@ -61,9 +62,10 @@ SMOOTH_STYLES = ("smooth", "clay", "toon")
 FACET_STYLES = ("facet", "facet_all")
 SLOPE_STYLES = ("slopes",)
 CHAMFER_STYLES = ("chamfer",)   # the facet chamfers built by mesh_slopes.chamfer_mesh, no Bevel modifier
-LOWPOLY_STYLES = ("lowpoly",)   # surface nets + light Laplacian, then quadric collapse to a few flat facets
+LOWPOLY_STYLES = ("lowpoly", "coarse")   # lowpoly: nets + planar dissolve; coarse: nets on the 15 mm cell grid (the sheet look)
 FLAT_STYLES = FACET_STYLES + SLOPE_STYLES + CHAMFER_STYLES + LOWPOLY_STYLES  # one flat material per palette colour, jitter 0
 CHAMFER_FRACTION = float(os.environ.get("VOXGEN_CHAMFER", "0.5"))  # chamfer width per step voxel
+COARSE_CELL = int(os.environ.get("VOXGEN_COARSE", "3"))   # fine voxels per cell of the coarse style
 LOWPOLY_PASSES = 14             # Laplacian passes before the collapse (free: the 1/2 U design steps melt into a curve)
 LOWPOLY_MODE = os.environ.get("VOXGEN_LOWPOLY", "planar")   # planar (angle dissolve) | collapse
 LOWPOLY_ANGLE_DEG = float(os.environ.get("VOXGEN_LOWPOLY_ANGLE", "10"))
@@ -315,6 +317,38 @@ def assign_palette_materials(ob, m: mesh.Mesh, cache: dict):
     ob.data.update()
 
 
+def coarse_nets(part, palette, cell: int, cubic_materials=()) -> mesh.Mesh:
+    """Surface nets of the part's skin form on a grid of ``cell`` fine voxels per cell (the form is
+    built cell-granular, so a cell is solid when its centre voxel is), scaled back to metres, plus
+    the ``cubic_materials`` of the fine part as culled cubes."""
+    from voxgen.model import Part
+    nz, ny, nx = part.material.shape
+    c = cell
+    cz, cy, cx = nz // c, ny // c, nx // c
+    sub = (slice(c // 2, cz * c, c), slice(c // 2, cy * c, c), slice(c // 2, cx * c, c))
+    mat = part.material[sub].copy()
+    if cubic_materials:
+        mat[np.isin(mat, list(cubic_materials))] = 0      # the fine features are not part of the form
+    # colour: the skin tone of the cell (its centre voxel may be an inner tissue), i.e. the colour of
+    # the first skin voxel in the 3x3x3 block, else the centre voxel's
+    blk_m = part.material[:cz * c, :cy * c, :cx * c].reshape(cz, c, cy, c, cx, c).transpose(0, 2, 4, 1, 3, 5).reshape(cz, cy, cx, -1)
+    blk_c = part.color[:cz * c, :cy * c, :cx * c].reshape(cz, c, cy, c, cx, c).transpose(0, 2, 4, 1, 3, 5).reshape(cz, cy, cx, -1)
+    is_skin = blk_m == M.MAT_SKIN
+    first = np.argmax(is_skin, axis=-1)
+    col = np.take_along_axis(blk_c, first[..., None], axis=-1)[..., 0]
+    col = np.where(is_skin.any(-1), col, part.color[sub])
+    coarse = Part(part.name + "_coarse", (cx, cy, cz), part.voxel_size * c, origin=part.origin, bone=part.bone)
+    coarse.material[:] = mat
+    coarse.color[:] = col
+    out = mesh.surface_nets(coarse, palette, smooth_passes=0, keep_cubic_materials=(), jitter=0.0,
+                            clamp="cell", inflate=0.0, hermite=False, hermite_passes=0)
+    if cubic_materials:
+        cubes = mesh.culled_quads(part, palette, jitter=0.0, ao=False, only_materials=tuple(cubic_materials))
+        if cubes.n_faces:
+            out = mesh._concat(out, cubes)
+    return out
+
+
 def add_chamfer(ob, ew: mesh.EdgeWeights, width_m: float):
     """Bevel modifier limited by the per-edge weights of ``mesh.step_edge_weights``: one flat segment
     of ``width_m`` (0.5 voxel per step voxel) turns every weighted 90 degree edge into an exact 45
@@ -551,6 +585,13 @@ def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float |
                                   hermite=bool(hermite), hermite_passes=int(smooth["hermite_passes"]))
             if m.hermite:
                 hermite_parts.append(part.name or f"part{i}")
+        elif style == "coarse":
+            # the sheet's own construction: the form lives on a coarse cell grid (COARSE_CELL fine
+            # voxels, 15 mm); surface nets on THAT grid put one vertex per coarse surface cell, so
+            # every coarse step becomes one 45-degree facet and flat regions stay flat; the fine
+            # features (brows, eyes, ears, mouth: the cubic materials) are drawn as cubes on top
+            m = coarse_nets(part, model.palette, COARSE_CELL, tuple(cubic_materials))
+            m.face_smooth[:] = False
         elif style in LOWPOLY_STYLES:
             # the low-poly look of the owner's bald-head reference: nets vertices sit at the cell
             # centres of the binary field (no Laplacian, no Hermite), flat shading, then Blender's
@@ -586,7 +627,7 @@ def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float |
             assign_palette_materials(ob, m, mat_cache)
         if style in LOWPOLY_STYLES:
             assign_palette_materials(ob, m, mat_cache)
-            if LOWPOLY_MODE == "planar":
+            if style == "coarse" or LOWPOLY_MODE == "planar":
                 # merge near-coplanar faces into big flat facets (the low-poly look of the sheet:
                 # large planes on the cheeks and forehead, small ones where the surface curves)
                 mod = ob.modifiers.new("LowPoly", "DECIMATE")

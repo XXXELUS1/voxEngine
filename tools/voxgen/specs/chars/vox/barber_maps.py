@@ -36,52 +36,54 @@ COLOURS = {
     "feather": "#d9c4a0", "feather_shadow": "#c6a582",
 }
 
-# Skull + neck as a PROFILE width map (1/2 U cells): columns z -2.5..14, rows y 13.5 -> -3.
+# Skull + neck as a PROFILE width map (1/2 U cells): columns z -2.5..14, rows y 14 -> -3.
 # Half-width codes: 1=1 A=1.5 2=2 B=2.5 3=3 C=3.5 4=4 D=4.5 5=5. After docs/reference/bald-head-
 # turnaround.png: the face is 8 wide (4) at the cheek plane z 0 and the sides 10 wide (5) from the
-# brow down to the cheekbones; the crown is a dome (rows narrow in z and x above y 11); the back is
-# rounded in 1/2 U steps and curves into the neck (occiput); the forehead slopes back from the brow
-# to the hairline; the nose (x +-1) is a 45-degree wedge from the bridge down to a 2 U cube 2 U
-# proud; below the cheekbones the jaw tapers (mouth rows 8 wide, chin 5..6 wide, 1/2 U proud) and
-# its bottom runs from the chin back and UP to the jaw angle under the ear; the neck (5 wide,
-# z 5.5..11.5) stands under the ear. Ears: |x| 5..6, z 7..10, y 4..7 with a 1 U notch (engine).
+# brow down to the cheekbones; the crown is a dome that curves (the front and back move in faster
+# toward the top, y 11..14); the back is rounded in 1/2 U steps; the forehead slopes back from the
+# brow to the hairline; the nose (x +-1) is a 45-degree wedge from the bridge down to a 2 U cube 2 U
+# proud; below the cheekbones the jaw tapers to the chin in 1/2 U steps (mouth rows 8 wide, chin
+# 4..5 wide, 1/2 U proud) and its underside rises at 45 degrees from the chin into the neck front
+# (z 5.5), so in profile the jaw line is one plane and the neck shows under the ear; the neck
+# (z 5.5..11.5, 4..5 wide, rounded) stands under the ear. Ears: |x| 5..6, z 7..10, y 4..7 (engine).
 SKULL = dict(
-    view="profile", cell=0.5, origin=(-2.5, 13.5), material="MAT_SKIN", colour="skin",
-    width={"1": 1.0, "A": 1.5, "2": 2.0, "B": 2.5, "3": 3.0, "C": 3.5, "4": 4.0, "D": 4.5, "5": 5.0},
+    view="profile", cell=0.5, origin=(-2.5, 14.0), material="MAT_SKIN", colour="skin",
+    width={"a": 0.5, "1": 1.0, "A": 1.5, "2": 2.0, "B": 2.5, "3": 3.0, "C": 3.5, "4": 4.0, "D": 4.5, "5": 5.0},
     rows=[
-        ".............2222222222..........",  # y 13..13.5
-        "...........3CCCCCCCCCC3B2A.......",  # y 12.5..13
-        "..........C4444444444444C3B2.....",  # y 12..12.5
-        ".........4DDDDDDDDDDDDDDD4C3B....",  # y 11.5..12
-        "........4D5555555555555555D4C3...",  # y 11..11.5
-        ".......4D555555555555555555D4C3..",  # y 10.5..11
-        ".......4D555555555555555555D4C3..",  # y 10..10.5
-        "......4D5555555555555555555D4C3..",  # y 9.5..10
-        "......4D5555555555555555555D4C3..",  # y 9..9.5
-        ".....4D55555555555555555555D4C3..",  # y 8.5..9
-        ".....4D55555555555555555555D4C3..",  # y 8..8.5
-        "....14D55555555555555555555D4C3..",  # y 7.5..8
-        "....14D55555555555555555555D4C3..",  # y 7..7.5
-        "...114D55555555555555555555D4C3..",  # y 6.5..7
-        "..1114D55555555555555555555D4C3..",  # y 6..6.5
-        ".11114D55555555555555555555D4C3..",  # y 5.5..6
-        ".11114D55555555555555555555D4C3..",  # y 5..5.5
-        ".11114D55555555555555555555D4C3..",  # y 4.5..5
-        ".....4D55555555555555555555D4C3..",  # y 4..4.5
-        ".....4DDDDDDDDDDDDDDDDDDDDD4C3B..",  # y 3.5..4
-        ".....4DDDDDDDDDDDDDDDDDDDD4C3B...",  # y 3..3.5
-        ".....C4DDDDDDDDDDDDDDDDDD4C3B....",  # y 2.5..3
-        "....B3C444444444444444444444.....",  # y 2..2.5
-        "....B3CCCCCCCCCCCCCCCCCCCBBB.....",  # y 1.5..2
-        "....BB3333333333333333BBBBBB.....",  # y 1..1.5
-        ".....B3333333333333BBBBBBBBB.....",  # y 0.5..1
-        ".....2BBBBBBBBBBBBBBBBBBBBBB.....",  # y 0..0.5
-        "................BBBBBBBBBBBB.....",  # y -0.5..0
-        "................BBBBBBBBBBBB.....",  # y -1..-0.5
-        "................BBBBBBBBBBBB.....",  # y -1.5..-1
-        "................BBBBBBBBBBBB.....",  # y -2..-1.5
-        "................BBBBBBBBBBBB.....",  # y -2.5..-2
-        "................BBBBBBBBBBBB.....",  # y -3..-2.5
+        ".................11111...........",  # y 13.5..14
+        "..............2222222211A........",  # y 13..13.5
+        "............333333333333A2B......",  # y 12.5..13
+        "..........C44444444444444B3C.....",  # y 12..12.5
+        ".........4DDDDDDDDDDDDDDDB3C4....",  # y 11.5..12
+        "........4D55555555555555553C4D...",  # y 11..11.5
+        ".......4D5555555555555555553C4D..",  # y 10.5..11
+        ".......4D5555555555555555553C4D..",  # y 10..10.5
+        "......4D55555555555555555553C4D..",  # y 9.5..10
+        "......4D55555555555555555553C4D..",  # y 9..9.5
+        ".....4D555555555555555555553C4D..",  # y 8.5..9
+        ".....4D555555555555555555553C4D..",  # y 8..8.5
+        "....14D555555555555555555553C4D..",  # y 7.5..8
+        "....14D555555555555555555553C4D..",  # y 7..7.5
+        "...114D555555555555555555553C4D..",  # y 6.5..7
+        "..1114D555555555555555555553C4D..",  # y 6..6.5
+        ".11114D555555555555555555553C4D..",  # y 5.5..6
+        ".11114D555555555555555555553C4D..",  # y 5..5.5
+        ".11114D555555555555555555555C4D..",  # y 4.5..5
+        ".....4D555555555555555555555C4D..",  # y 4..4.5
+        ".....4DDDDDDDDDDDDDDDDDDDDDD3C4..",  # y 3.5..4
+        ".....C4DDDDDDDDDDDDDDDDDDDD3C4...",  # y 3..3.5
+        ".....C44444444444444444444B3C....",  # y 2.5..3
+        "....23C444444444444444444B3C.....",  # y 2..2.5
+        "....23CCCCCCCC..22BBBBBBBB22.....",  # y 1.5..2
+        "....2B333333....22BBBBBBBB22.....",  # y 1..1.5
+        "....2B3333......22BBBBBBBB22.....",  # y 0.5..1
+        "....22BB........22BBBBBBBB22.....",  # y 0..0.5
+        "................22BBBBBBBB22.....",  # y -0.5..0
+        "................22BBBBBBBB22.....",  # y -1..-0.5
+        "................22BBBBBBBB22.....",  # y -1.5..-1
+        "................22BBBBBBBB22.....",  # y -2..-1.5
+        "................22BBBBBBBB22.....",  # y -2.5..-2
+        "................22BBBBBBBB22.....",  # y -3..-2.5
     ],
 )
 
@@ -150,7 +152,7 @@ BEARD = dict(
     rows=[
         "...#.......",  # y 3.5-4   beard top at the face edge
         "..>##......",  # y 3-3.5
-        ">>>##......",  # y 2.5-3
+        ">>>###.....",  # y 2.5-3   reaches the moustache ends (x -2.5)
         ">>>###.....",  # y 2-2.5
         ">>>####....",  # y 1.5-2   (lip strip x >= -1.5 stays bare)
         ".>>########",  # y 1-1.5   chin block + goatee ring
@@ -204,12 +206,13 @@ BERET_SIDE = dict(
 )
 
 # Hair, front map: 1/2 U cells, full width (x -7..7), rows y 12 -> 2.5. Letters give the z extent:
-# fringe rows follow the sloping forehead: d 0.5..2.5, c 0..2, b -0.5..1; side locks (in front of
-# the ear) 1 -0.5..1.5, 2 0..2.5, 3 0.5..4, 6 1..4.5.
+# fringe rows follow the sloping forehead: d 0.5..2.5, c 0..2, b -0.5..1; side locks hang beside
+# the temples and in front of the ear, behind the cheek (the cheek side stays bare in profile, as
+# on the owner's profile sheet): 1 1..3, 2 1.5..4, 3 2.5..5.5, 6 3..6.
 HAIR_FRONT = dict(
     view="front", cell=0.5, origin=(-7.0, 12.0), mirror=False, material="MAT_HAIR",
     depth={"b": (-0.5, 1.0), "c": (0.0, 2.0), "d": (0.5, 2.5),
-           "1": (-0.5, 1.5), "2": (0.0, 2.5), "3": (0.5, 4.0), "6": (1.0, 4.5)},
+           "1": (1.0, 3.0), "2": (1.5, 4.0), "3": (2.5, 5.5), "6": (3.0, 6.0)},
     palette={"hair": 5, "hair_dark": 3, "hair_light": 2}, block=1.0,
     rows=[
         "............................",  # y 11.5-12 (band)

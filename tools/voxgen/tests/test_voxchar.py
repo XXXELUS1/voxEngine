@@ -1,8 +1,10 @@
-"""Designed voxel-art character (voxgen.voxchar): the head builds as a rounded box with the
-painted face (white-block eyes with lid and pupil, proud brows, two nose blocks, the mouth line
-with the tooth row behind it, ear notches) and the hair, the body is a block figure of normal
-proportions, both are mirror-symmetric and pass the checks clean, every hair / beard / hat /
-outfit option builds, and the coat_guy / barber specs build as one model with the expected parts."""
+"""Designed voxel-art character (voxgen.voxchar): the head builds as coarse cubes whose edges are
+exact 1:1 staircases of five fine voxels (45-degree planes for the facet renderer: the front and
+back edges, the jaw steps, the chin, the top and the back), with the painted face (white-block
+eyes with lid and pupil, proud brows, the nose block with its top sloped, the mouth line with the
+tooth row behind it, ear notches) and the hair, the body is a block figure of normal proportions,
+both are mirror-symmetric and pass the checks clean, every hair / beard / hat / outfit option
+builds, and the coat_guy / barber specs build as one model with the expected parts."""
 import importlib.util
 from pathlib import Path
 
@@ -13,8 +15,8 @@ from voxgen import checks
 from voxgen.body import exposed
 from voxgen.materials import (MAT_AIR, MAT_BONE, MAT_CLOTH, MAT_EYE, MAT_FAT, MAT_HAIR, MAT_LEATHER, MAT_MUSCLE,
                               MAT_PLANT, MAT_SKIN, MAT_TOOTH)
-from voxgen.voxchar import (BACK, BEARDS, HAIR_STYLES, HATS, HW, OUTFITS, ROWS, TOP, UP, VoxCharParams,
-                            build_character)
+from voxgen.voxchar import (BACK, BEARDS, BERET_ROWS, HAIR_STYLES, HATS, HW, NOSE, OUTFITS, ROWS, TOP, UP,
+                            VoxCharParams, build_character, chamfer_edge)
 
 SPECS = Path(__file__).resolve().parents[1] / "specs" / "chars" / "vox"
 OUTER = {MAT_SKIN, MAT_HAIR, MAT_EYE, MAT_CLOTH, MAT_LEATHER, MAT_PLANT}
@@ -60,6 +62,20 @@ def at(part, X: int, Y: int, Z: int) -> int:
     if not (0 <= ix < part.nx and 0 <= iy < part.ny and 0 <= iz < part.nz):
         return MAT_AIR
     return int(part.material[iz, iy, ix])
+
+
+def first_z(part, X: int, Y: int, lo: int = -8, hi: int = 12) -> int | None:
+    """The front-most solid z of the column (X, Y) in skull-frame coordinates."""
+    return next((z for z in range(lo, hi) if at(part, X, Y, z) != MAT_AIR), None)
+
+
+def outer_x(part, Y: int, Z: int) -> int | None:
+    """The outermost solid x (from the -x side) of the row (Y, Z)."""
+    return next((x for x in range(-6, HW) if at(part, x, Y, Z) != MAT_AIR), None)
+
+
+def back_z(part, X: int, Y: int) -> int | None:
+    return next((z for z in range(BACK + 12, 0, -1) if at(part, X, Y, z) != MAT_AIR), None)
 
 
 @pytest.fixture(scope="module")
@@ -136,26 +152,54 @@ def test_head_face_and_tissues(head_model):
     assert stats["mouth"] == 22 and stats["brow"] > 0 and stats["cheek"] > 0 and stats["teeth"] == 64
 
 
-def test_head_form_is_a_rounded_box_with_details(head_model):
+def test_chamfer_edge_is_an_exact_staircase_of_five():
+    d = np.arange(12)
+    cut = chamfer_edge(d[None, :], d[:, None])            # distances from face a (columns) and face b (rows)
+    assert cut.shape == (12, 12) and int(cut.sum()) == 15  # the triangle 5 + 4 + 3 + 2 + 1
+    first = np.argmax(~cut, axis=0)                        # the first kept row per layer of face a
+    assert first.tolist()[:7] == [5, 4, 3, 2, 1, 0, 0]    # one voxel per step, five steps, then the flat face
+    assert not chamfer_edge(np.array([-1]), np.array([0])).any()
+    assert int(chamfer_edge(d[None, :], d[:, None], run=3).sum()) == 6
+
+
+def test_head_form_is_coarse_cubes_with_45_degree_edges(head_model):
     head = head_model.part("head")
-    # the face plane is flat skin, the box's edges and corners are cut (45-degree staircases)
+    # the face plane is flat skin; the top face is flat
     assert at(head, HW, 48, 0) == MAT_SKIN and at(head, HW, TOP, 20) == MAT_SKIN
-    assert at(head, 0, 30, 0) == MAT_AIR and at(head, 2, 30, 0) == MAT_AIR and at(head, 3, 30, 0) == MAT_SKIN
-    assert at(head, 0, TOP, 20) == MAT_AIR and at(head, HW, TOP, BACK) == MAT_AIR and at(head, 0, 0, 0) == MAT_AIR
-    assert at(head, HW, TOP, BACK - 8) == MAT_SKIN and at(head, HW, TOP - 8, BACK) == MAT_SKIN
-    # the jaw is narrower than the cranium below the ear line
-    assert at(head, 44, 45, 25) == MAT_SKIN and at(head, 44, 10, 25) == MAT_AIR and at(head, 40, 10, 25) == MAT_SKIN
+    # the front vertical edge: a 1:1 staircase of five fine steps spanning one coarse cell
+    assert [first_z(head, x, 30) for x in range(0, 7)] == [5, 4, 3, 2, 1, 0, 0]
+    assert at(head, -1, 30, 0) == MAT_AIR
+    # the top-front edge: the same staircase up the forehead
+    assert [first_z(head, HW, y) for y in range(49, 55)] == [0, 1, 2, 3, 4, 5]
+    # the jaw: one cell narrower per side through a 45-degree plane under the ear line (y 25 -> 20),
+    # again at the chin (15 -> 10), and the chin's bottom chamfered on the sides (5 -> 0)
+    assert [outer_x(head, y, 25) for y in (25, 24, 22, 20, 17, 15)] == [0, 1, 3, 5, 5, 5]
+    assert [outer_x(head, y, 25) for y in (14, 12, 10, 7, 5)] == [6, 8, 10, 10, 10]
+    assert [outer_x(head, y, 25) for y in (4, 2, 0)] == [11, 13, 15]
+    # the back: two 45-degree cells at the top-back and the bottom-back, straight between
+    assert [back_z(head, HW, y) for y in (44, 45, 49, 50, 54)] == [BACK, BACK - 1, BACK - 5, BACK - 6, BACK - 10]
+    assert [back_z(head, HW, y) for y in (10, 9, 5, 0)] == [BACK, BACK - 1, BACK - 5, BACK - 10]
+    assert at(head, HW, TOP, BACK) == MAT_AIR and at(head, 0, TOP, 20) == MAT_AIR and at(head, 0, 0, 0) == MAT_AIR
     # ears: blocks on the side planes with a two-voxel notch in the outer face
     assert at(head, 46, 28, 21) == MAT_SKIN and at(head, 48, 28, 21) == MAT_SKIN
     assert at(head, 48, 31, 24) == MAT_AIR and at(head, 46, 31, 24) == MAT_SKIN
-    # the nose: the tip block five voxels proud with softened front edges, the bridge two proud
-    assert at(head, HW, 27, -5) == MAT_SKIN and at(head, HW, 24, -5) == MAT_AIR and at(head, HW, 24, -4) == MAT_SKIN
-    assert at(head, HW, 34, -2) == MAT_SKIN and at(head, HW, 34, -3) == MAT_AIR
-    # brows: hair material two voxels proud of the face, the inner end a row lower
-    assert at(head, 30, 44, -1) == MAT_HAIR and at(head, 30, 44, -2) == MAT_HAIR and at(head, 30, 44, -3) == MAT_AIR
-    assert at(head, 26, 42, -1) == MAT_HAIR and at(head, 34, 42, -1) == MAT_AIR
-    # the mouth line with its corners a voxel up (colour only)
+    # the nose: a block one cell proud whose top is a 45-degree slope from the bridge (y 33 on the
+    # face plane) down to the front top edge (y 28), the bottom flat, two dark nostril voxels
+    x0, x1, y0, y1, nz = NOSE
+    tops = {z: max(y for y in range(y0 - 2, y1 + 2) if at(head, HW, y, z) != MAT_AIR) for z in range(-nz, 0)}
+    assert tops == {z: y1 - nz + (z + nz) for z in range(-nz, 0)}
+    assert all(min(y for y in range(y0 - 2, y1 + 2) if at(head, HW, y, z) != MAT_AIR) == y0 for z in range(-nz, 0))
+    assert at(head, x0, 26, -nz) == MAT_SKIN and at(head, x0 - 1, 26, -nz) == MAT_AIR and at(head, x1 + 1, 26, -nz) == MAT_AIR
     pal = head_model.palette
+    nostril = head.color == pal.index("line")
+    assert int(nostril.sum()) == 2 and at(head, HW + 2, y0, -nz) == MAT_SKIN
+    assert head_model.meta["build"]["head"]["nostril"] == 2
+    # brows: hair material two voxels proud of the face, three rows a row above the lids, the
+    # inner end a row lower
+    assert at(head, 30, 43, -1) == MAT_HAIR and at(head, 30, 43, -2) == MAT_HAIR and at(head, 30, 43, -3) == MAT_AIR
+    assert at(head, 30, 42, -1) == MAT_HAIR and at(head, 30, 45, -1) == MAT_AIR and at(head, 30, 41, -1) == MAT_AIR
+    assert at(head, 26, 41, -1) == MAT_HAIR and at(head, 34, 41, -1) == MAT_AIR and at(head, 40, 43, -1) == MAT_AIR
+    # the mouth line with its corners a voxel up (colour only)
     mouth = head.color == pal.index("mouth")
     ys = np.nonzero(mouth)[1]
     assert int(mouth.sum()) == 22 and ys.max() - ys.min() == 2
@@ -200,7 +244,7 @@ def test_beard_options(beard):
     m = build_character(VoxCharParams(name="t", beard=beard, brows_thick=True), head_only=True)
     names = [p.name for p in m.parts]
     assert ("beard" in names) == (beard in ("short", "full"))
-    assert m.part("head").material_histogram()[MAT_HAIR] == 2 * 16 * 5 * 2 + 2 * 3 * 2   # the thick brows
+    assert m.part("head").material_histogram()[MAT_HAIR] == 2 * 15 * 5 * 2 + 2 * 3 * 2   # the thick brows
     report = checks.run(m)
     assert report["errors"] == [] and report["warnings"] == [], (beard, report)
     if beard == "stubble":
@@ -240,9 +284,15 @@ def test_bad_params():
 def test_mustache_sits_under_the_nose_over_the_mouth_gap():
     m = build_character(VoxCharParams(name="t", beard="short", mustache=True), head_only=True)
     beard = m.part("beard")
-    assert at(beard, HW, 21, -3) == MAT_HAIR and at(beard, HW, 17, -3) == MAT_AIR    # the mouth gap stays open
-    assert at(beard, 11, 16, -3) == MAT_HAIR and at(beard, HW, 5, -2) == MAT_HAIR     # the ends hang; the chin is covered
-    assert at(beard, HW, 40, -3) == MAT_AIR
+    assert at(beard, HW, 21, -2) == MAT_HAIR and at(beard, HW, 21, -3) == MAT_AIR     # two voxels thick
+    assert at(beard, HW, 17, -2) == MAT_AIR                                           # the mouth gap stays open
+    assert at(beard, 11, 16, -2) == MAT_HAIR and at(beard, HW, 5, -2) == MAT_HAIR     # the ends hang; the chin is covered
+    assert at(beard, HW, 40, -2) == MAT_AIR
+    # the beard follows the jaw's chamfers: three voxels at the chin, two on the jaw's side plane
+    assert [at(beard, HW, 5, z) for z in (-1, -2, -3, -4)] == [MAT_HAIR] * 3 + [MAT_AIR]
+    assert [at(beard, x, 22, 10) for x in (3, 2, 1, 0)] == [MAT_AIR, MAT_HAIR, MAT_HAIR, MAT_AIR]
+    assert at(beard, 4, 18, 10) == MAT_HAIR and at(beard, 4, 18, 24) == MAT_AIR      # the top edge falls toward the nape
+    assert at(beard, 9, 8, 24) == MAT_HAIR and at(beard, 9, 8, 31) == MAT_AIR
     assert _mirror_exact(beard)
     report = checks.run(m)
     assert report["errors"] == [] and report["warnings"] == []
@@ -262,8 +312,23 @@ def test_barber_spec_builds():
     assert feather.bbox()[1][1] + feather.origin[1] / feather.voxel_size > hat.bbox()[1][1] + hat.origin[1] / hat.voxel_size
     assert set(np.unique(m.part("head").material[exposed(m.part("head").solid())]).tolist()) <= OUTER
     h = build_character(mod.PARAMS, head_only=True)      # the head frame, for coordinates
-    assert at(h.part("hair"), HW, 52, -1) == MAT_HAIR and at(h.part("hat"), HW, 57, -6) == MAT_CLOTH
-    assert at(h.part("hat"), HW, 70, 25) == MAT_CLOTH and at(h.part("hat"), HW, 52, -6) == MAT_AIR
+    hat, hair = h.part("hat"), h.part("hair")
+    assert at(hair, HW, 51, -1) == MAT_HAIR and at(hat, HW, 52, -6) == MAT_AIR
+    # the beret: the band one cell outside the skull, the flare 1:1 to two cells, the top closing
+    # over three cells on the right and the front, two on the left and the back (the slouch)
+    y0, y1 = BERET_ROWS
+    assert at(hat, HW, y0 + 2, -UP) == MAT_CLOTH and at(hat, HW, y0 + 2, -UP - 1) == MAT_AIR
+    assert [first_z(hat, HW, y, lo=-14) for y in range(y0 + UP, y0 + 2 * UP + 1)] == [-5, -6, -7, -8, -9, -10]
+    assert at(hat, HW, 70, 25) == MAT_CLOTH
+    assert at(hat, 39, y1, 25) == MAT_CLOTH and at(hat, 40, y1, 25) == MAT_AIR       # right: 10 -> -5
+    assert at(hat, 0, y1, 25) == MAT_CLOTH and at(hat, -1, y1, 25) == MAT_AIR        # left: 10 -> 0
+    assert [first_z(hat, HW, y, lo=-14) for y in (y0 + 3 * UP, y0 + 4 * UP, y1)] == [-9, -4, 5]   # front closing: 1:1 from the row after y0 + 3 cells
+    assert at(hat, 20, y1 + 2, 25) == MAT_AIR                                        # crumples are one voxel
+    # chunky hair: an even shell of three with tufts two voxels prouder at the nape and the temples
+    assert at(hair, HW, 20, BACK + 3) == MAT_HAIR and at(hair, HW, 20, BACK + 4) == MAT_AIR
+    assert at(hair, HW, 22, BACK + 5) == MAT_HAIR and at(hair, HW, 26, BACK + 5) == MAT_AIR
+    assert at(hair, -5, 30, 8) == MAT_HAIR and at(hair, -5, 28, 8) == MAT_AIR and at(hair, -4, 27, 8) == MAT_AIR
+    assert (hair.color == h.palette.index("hair_light")).any()
 
 
 def test_coat_guy_spec_builds():

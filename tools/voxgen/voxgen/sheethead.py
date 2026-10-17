@@ -97,7 +97,7 @@ NOTCH_TONE = "skin_shadow"
 CAVITY_X, CAVITY_Y, CAVITY_DEPTH = (-2.5, 2.5), (3.25, 3.75), 1.0
 #: the lips: the cavity's front wall (units) stays skin; the fine row starting at ``LIP_SLIT_Y``
 #: is coloured ``LIP_TONE`` across the mouth's width (the mouth line)
-LIP_THICK, LIP_SLIT_Y, LIP_TONE = 0.25, 3.5, "skin_shadow"
+LIP_THICK, LIP_SLIT_Y, LIP_TONE = 0.25, 3.5, "eye_frame"   # the mouth line is dark, as on the sheets
 #: fine x of each tooth's left edge (x = k / FINE) and the tooth width in fine voxels: seven
 #: 2-fine teeth with 1-fine gaps across the 5 U back wall (mirror-exact)
 TEETH_X, TOOTH_W = (-10, -7, -4, -1, 2, 5, 8), 2

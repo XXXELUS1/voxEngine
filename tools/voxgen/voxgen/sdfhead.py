@@ -26,8 +26,9 @@ from .blockhead import FINE, Frame
 #: reference units per map unit: 1 u = 0.75 U (15 mm)
 U_PER_u = 0.75
 #: fine voxels per coarse cell (one reference voxel)
-COARSE = 3
-assert abs(U_PER_u * FINE - COARSE) < 1e-9
+COARSE = 3   # 3 = the sheet's 15 mm cells; 1 = the form sampled at the fine 5 mm voxels
+import os as _os
+COARSE = int(_os.environ.get("VOXGEN_COARSE", COARSE))
 
 #: row-by-row half-widths of the reference silhouettes (u), rows of 1 u from the crown down:
 #: front (head without ears where the ears hide it), profile depth (z from the cheek plane, back),

@@ -65,6 +65,8 @@ LOWPOLY_STYLES = ("lowpoly",)   # surface nets + light Laplacian, then quadric c
 FLAT_STYLES = FACET_STYLES + SLOPE_STYLES + CHAMFER_STYLES + LOWPOLY_STYLES  # one flat material per palette colour, jitter 0
 CHAMFER_FRACTION = float(os.environ.get("VOXGEN_CHAMFER", "0.5"))  # chamfer width per step voxel
 LOWPOLY_PASSES = 14             # Laplacian passes before the collapse (free: the 1/2 U design steps melt into a curve)
+LOWPOLY_MODE = os.environ.get("VOXGEN_LOWPOLY", "planar")   # planar (angle dissolve) | collapse
+LOWPOLY_ANGLE_DEG = float(os.environ.get("VOXGEN_LOWPOLY_ANGLE", "10"))
 LOWPOLY_RATIO = 0.06            # Decimate(collapse) face ratio: the low-poly look of the owner's bald reference
 SMOOTH_DEFAULTS = {"passes": 2, "clamp": "cell", "inflate": 0.0, "jitter": 0.04,  # jitter: 0 in mix (flat skin)
                    "hermite": None, "hermite_passes": 0}  # hermite None = when the part has the sdf field
@@ -553,9 +555,10 @@ def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float |
             # the low-poly look of the owner's bald-head reference: nets vertices sit at the cell
             # centres of the binary field (no Laplacian, no Hermite), flat shading, then Blender's
             # planar dissolve merges the near-coplanar strips of a staircase into one facet
-            m = mesh.surface_nets(part, model.palette, smooth_passes=LOWPOLY_PASSES,
+            hermite = part.sdf is not None      # the exact surface of the form when the sdf field is there
+            m = mesh.surface_nets(part, model.palette, smooth_passes=0 if hermite else LOWPOLY_PASSES,
                                   keep_cubic_materials=tuple(cubic_materials), clamp="free", inflate=0.0, jitter=0.0,
-                                  hermite=False, hermite_passes=0)
+                                  hermite=hermite, hermite_passes=0)
             m.face_smooth[:] = False
         elif style in SLOPE_STYLES:
             j = jitter if jitter is not None else 0.0
@@ -583,10 +586,22 @@ def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float |
             assign_palette_materials(ob, m, mat_cache)
         if style in LOWPOLY_STYLES:
             assign_palette_materials(ob, m, mat_cache)
-            mod = ob.modifiers.new("LowPoly", "DECIMATE")
-            mod.decimate_type = "COLLAPSE"
-            mod.ratio = LOWPOLY_RATIO
-            mod.use_collapse_triangulate = True
+            if LOWPOLY_MODE == "planar":
+                # merge near-coplanar faces into big flat facets (the low-poly look of the sheet:
+                # large planes on the cheeks and forehead, small ones where the surface curves)
+                mod = ob.modifiers.new("LowPoly", "DECIMATE")
+                mod.decimate_type = "DISSOLVE"
+                mod.angle_limit = math.radians(LOWPOLY_ANGLE_DEG)
+                mod.use_dissolve_boundaries = False
+                mod.delimit = {"MATERIAL"}
+                tri = ob.modifiers.new("Tri", "TRIANGULATE")
+                tri.quad_method = "BEAUTY"
+                tri.ngon_method = "BEAUTY"
+            else:
+                mod = ob.modifiers.new("LowPoly", "DECIMATE")
+                mod.decimate_type = "COLLAPSE"
+                mod.ratio = LOWPOLY_RATIO
+                mod.use_collapse_triangulate = True
         if style in FACET_STYLES:
             assign_palette_materials(ob, m, mat_cache)
             ew = mesh.step_edge_weights(m, part, mode="all" if style == "facet_all" else "steps", min_run=2,

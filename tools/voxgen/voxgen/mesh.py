@@ -22,8 +22,9 @@ Pure numpy, importable without Blender. Two builders, both returning a :class:`M
   :mod:`voxgen.sdfield`): every crossing edge of a cell puts its point at the linear zero crossing
   of the two corner distances, the vertex is the mean of its crossings (classic Hermite surface
   nets, the surface the voxels were sampled from is recovered to ~1/16 voxel), the normals are the
-  trilinearly sampled Sobel gradient of the field (``Mesh.vertex_normals``), and no Laplacian pass
-  runs (``hermite_passes`` adds light cell-clamped ones). A corner pair whose occupancy and field
+  trilinearly sampled Sobel gradient of the field (``Mesh.vertex_normals``), the vertex AO is read
+  from the field along the normal (the corner-count AO of the binary path is grid noise on an exact
+  surface), and no Laplacian pass runs (``hermite_passes`` adds light cell-clamped ones). A corner pair whose occupancy and field
   disagree (a cubic material cut out of the surface) crosses at the edge midpoint.
 * :func:`step_edge_weights` - per-edge chamfer weights for the "facet" look (cubes whose one-voxel
   steps become exact 45 degree slopes while big flat faces stay crisp). Rule, to be ported to C++
@@ -334,8 +335,14 @@ def _surface_nets(material, color, pal, solid, smooth_passes, jitter, inset=0.02
     d = np.where(cc, ((cpos - pos[:, None, :]) ** 2).sum(-1), np.inf)
     vox = np.clip(cmin.astype(np.int64) + corner_off[np.argmin(d, axis=1)] - 1, 0, [nx - 1, ny - 1, nz - 1])
     vrgb = _voxel_rgb(pal, color, vox, jitter)
-    vao = 1.0 - np.clip((nsolid[active].astype(np.float32) - 4.0) / 3.0, 0.0, 1.0) * 0.5
-    normals = _sdf_normals(spad, cell_idx, corner_off, pos - cmin, pos, quads) if hermite else None
+    if hermite:
+        # the corner-count AO alternates 1.0 / 0.5 along a tilted smooth surface (grid grain on the
+        # exact geometry), so Hermite nets take their AO from the field itself
+        normals = _sdf_normals(spad, cell_idx, corner_off, pos - cmin, pos, quads)
+        vao = _sdf_ao(spad, pos, normals)
+    else:
+        normals = None
+        vao = 1.0 - np.clip((nsolid[active].astype(np.float32) - 4.0) / 3.0, 0.0, 1.0) * 0.5
     positions = (pos - 0.5).astype(np.float32)  # padded centre space -> unpadded corner space
     return positions, quads, _voxel_rgb(pal, color, fvox, jitter), material[fvox[:, 2], fvox[:, 1], fvox[:, 0]], \
         vrgb, vao.astype(np.float32), normals
@@ -365,6 +372,31 @@ def _sobel_gradient(f: np.ndarray) -> np.ndarray:
                 d = smooth(d, a)
         out[comp] = d
     return out
+
+
+def _trilinear(field: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    """Trilinear sample of a (nz, ny, nx) field at (N, 3) xyz points in its index space (the value
+    of voxel (x, y, z) sits at (x, y, z)); points are clamped to the grid."""
+    nz, ny, nx = field.shape
+    q = np.clip(pts.astype(np.float32), 0.0, np.array([nx - 1.001, ny - 1.001, nz - 1.001], np.float32))
+    i0 = np.floor(q).astype(np.int64)
+    fr = q - i0
+    out = np.zeros(len(q), np.float32)
+    for dx, dy, dz in ((ux, uy, uz) for uz in (0, 1) for uy in (0, 1) for ux in (0, 1)):
+        w = (fr[:, 0] if dx else 1 - fr[:, 0]) * (fr[:, 1] if dy else 1 - fr[:, 1]) * (fr[:, 2] if dz else 1 - fr[:, 2])
+        out += w * field[i0[:, 2] + dz, i0[:, 1] + dy, i0[:, 0] + dx]
+    return out
+
+
+def _sdf_ao(spad, pos, normals, steps=(1.0, 2.0, 3.0), weights=(0.5, 0.3, 0.2), floor=0.5) -> np.ndarray:
+    """(V,) ambient occlusion in [floor, 1] from the field: the distance sampled ``h`` voxels along
+    the normal falls short of ``h`` where other surface is near (a crease, a pocket), open surface
+    reads 1. Smooth, grid-free."""
+    occ = np.zeros(len(pos), np.float32)
+    for h, w in zip(steps, weights):
+        d = _trilinear(spad, pos + np.float32(h) * normals)
+        occ += np.float32(w) * np.clip((np.float32(h) - d) / np.float32(h), 0.0, 1.0)
+    return np.clip(1.0 - occ, floor, 1.0).astype(np.float32)
 
 
 def _sdf_normals(spad, cell_idx, corner_off, frac, pos, quads) -> np.ndarray:

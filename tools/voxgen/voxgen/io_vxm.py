@@ -5,7 +5,8 @@ For every part in order, for every field in ``part.fields`` order, ``nx*ny*nz`` 
 ``index = x + nx*(y + ny*z)``; our arrays are ``(nz, ny, nx)`` C-order so that is
 ``array.tobytes()``. The standard fields (``material``, ``color``, ``state``) are uint8; the
 optional ``sdf`` field is int8 (:mod:`voxgen.sdfield`); any other field name is kept as raw
-uint8 in ``Part.extra`` so it survives a read-write round trip (the C++ loader skips it).
+uint8 in ``Part.extra`` so it survives a read-write round trip (written after the standard three;
+the C++ loader skips it).
 """
 
 from __future__ import annotations

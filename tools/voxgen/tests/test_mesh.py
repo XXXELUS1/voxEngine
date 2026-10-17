@@ -141,6 +141,9 @@ def test_hermite_nets_recover_the_sphere_binary_nets_do_not():
     assert h.vertex_normals.shape == h.positions.shape
     assert (radial * h.vertex_normals).sum(1).min() > np.cos(np.radians(2.0))
     assert np.allclose(np.linalg.norm(h.vertex_normals, axis=1), 1.0, atol=1e-4)
+    # a convex sphere is open: the field-based AO stays near 1 (the binary corner-count AO is grid noise)
+    assert h.corner_ao.min() > 0.95 and h.corner_ao.mean() > 0.98 and h.vertex_colors[:, 3].min() > 240
+    assert binary.corner_ao.min() <= 0.5
     # forced binary path on a part with the field, and a light pass stays close to the exact crossings
     forced = mesh.surface_nets(p, pal, smooth_passes=0, hermite=False)
     assert not forced.hermite and np.allclose(forced.positions, binary.positions)

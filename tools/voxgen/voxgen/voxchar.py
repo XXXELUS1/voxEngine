@@ -195,22 +195,6 @@ class Cells:
     def empty(self) -> np.ndarray:
         return np.zeros(self.shape, bool)
 
-    def up(self, m: np.ndarray, k: int) -> np.ndarray:
-        """Nearest upsampling x k on every axis."""
-        return np.repeat(np.repeat(np.repeat(m, k, 0), k, 1), k, 2)
-
-    def f(self, axis: int, c: int, off: int = 0) -> int:
-        """Fine index of coarse cell ``c`` on ``axis`` (0 = x, 1 = y, 2 = z) plus ``off``."""
-        return (int(c) - self.lo[axis]) * UP + int(off)
-
-
-def fbox(shape, x0: int, x1: int, y0: int, y1: int, z0: int, z1: int) -> np.ndarray:
-    """Bool mask of the inclusive fine-index box (clipped to the grid)."""
-    m = np.zeros(shape, bool)
-    nz, ny, nx = shape
-    m[max(z0, 0):min(z1, nz - 1) + 1, max(y0, 0):min(y1, ny - 1) + 1, max(x0, 0):min(x1, nx - 1) + 1] = True
-    return m
-
 
 def mirror_x(m: np.ndarray) -> np.ndarray:
     return m | m[:, :, ::-1]
@@ -390,8 +374,9 @@ def top_faces(m: np.ndarray) -> np.ndarray:
 def hair_mass(p: VoxCharParams, f: Frame, skull: np.ndarray, form: np.ndarray, ears: np.ndarray) -> np.ndarray:
     """The hair: a shell 3 voxels thick on the skull (thinner than the reference), bottoms per
     region (a ragged hairline on the forehead, the temples bare, the sides to mid-ear, the nape),
-    then per style: ``chunky`` raises sparse 5x5 clumps 2 voxels (the lighter tone); ``slabs`` stacks two
-    octagonal slabs and a quiff on the swept side with groove lines along the sweep."""
+    then per style: ``chunky`` raises sparse 5x5 clumps 2 voxels (the lighter tone); ``slabs`` stacks an
+    octagonal slab, a second one on the swept side and a quiff block there with groove lines
+    along the sweep (the lighter tone on the swept slab and the quiff's top)."""
     X, Y, Z = f.X, f.Y, f.Z
     shell = dilate(skull, 3) & ~form & ~dilate(ears)       # the ears stay clear (no hair in the notch)
     front, back = Z < 0, Z > BACK
@@ -414,19 +399,20 @@ def hair_mass(p: VoxCharParams, f: Frame, skull: np.ndarray, form: np.ndarray, e
         hair |= dilate(skull, 5) & ~dilate(skull, 3) & ~dilate(ears, 2) & f.full(region & clumps & (Y <= 54))
         hair = main_component(hair)
     elif p.hair == "slabs" and p.hat == "none":
-        hair |= f.box(-1, 45, 57, 63, -1, 50, r=7)
+        hair |= f.box(-3, 47, 57, 62, -3, 52, r=8)                 # one slab on the whole shell
         if s < 0:
-            hair |= f.box(-2, 26, 64, 68, 4, 44, r=6)
-            quiff = f.box(-3, 18, 55, 69, -4, 2)
+            hair |= f.box(-3, 26, 63, 66, 0, 46, r=7)              # the swept slab, joined to the quiff
+            quiff = f.box(-3, 18, 55, 68, -4, 4)
         elif s > 0:
-            hair |= f.box(18, 46, 64, 68, 4, 44, r=6)
-            quiff = f.box(26, 47, 55, 69, -4, 2)
+            hair |= f.box(18, 47, 63, 66, 0, 46, r=7)
+            quiff = f.box(26, 47, 55, 68, -4, 4)
         else:
-            hair |= f.box(6, 38, 64, 68, 6, 42, r=6)
-            quiff = f.box(12, 32, 55, 69, -4, 2)
-        hair |= quiff & f.full((69 - Y) + (Z + 4) >= 6)
+            hair |= f.box(6, 38, 63, 66, 4, 42, r=7)
+            quiff = f.box(12, 32, 55, 68, -4, 4)
+        quiff &= f.full((68 - Y) + (Z + 4) >= 6)                   # the top-front edge cut 45 degrees
+        hair |= quiff
         hair &= ~form
-        groove = top_faces(hair) & f.full((Y >= 57) & ((Z + s * (X // 7)) % 8 == 0))
+        groove = top_faces(hair) & quiff & f.full((Z + s * (X // 7)) % 4 == 0)   # strand lines on the quiff only
         hair &= ~groove
     return hair
 
@@ -565,7 +551,7 @@ def build_head(p: VoxCharParams, pal: Palette) -> tuple[list[Part], dict]:
         if p.hair == "chunky":
             light = hair & ~dilate(skull, 3)                       # the raised clumps
         else:
-            light = hair & f.full(Y >= 64)                         # the swept slab and the quiff's top
+            light = hair & f.full(Y >= 63)                         # the swept slab and the quiff's top
         hp.color[light] = C("hair_light")
         stats["hair"] = int(hair.sum())
         parts.append(hp)

@@ -59,6 +59,7 @@ FACET_STYLES = ("facet", "facet_all")
 SLOPE_STYLES = ("slopes",)
 LOWPOLY_STYLES = ("lowpoly",)   # surface nets + light Laplacian, then quadric collapse to a few flat facets
 FLAT_STYLES = FACET_STYLES + SLOPE_STYLES + LOWPOLY_STYLES  # one flat material per palette colour, jitter 0
+CHAMFER_FRACTION = float(os.environ.get("VOXGEN_CHAMFER", "0.5"))  # chamfer width per step voxel
 LOWPOLY_PASSES = 14             # Laplacian passes before the collapse (free: the 1/2 U design steps melt into a curve)
 LOWPOLY_RATIO = 0.06            # Decimate(collapse) face ratio: the low-poly look of the owner's bald reference
 SMOOTH_DEFAULTS = {"passes": 2, "clamp": "cell", "inflate": 0.0, "jitter": 0.04,  # jitter: 0 in mix (flat skin)
@@ -560,7 +561,7 @@ def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float |
                 chamfer["slopes_" + key] = chamfer.get("slopes_" + key, 0) + int(st.get(key, 0))
         else:
             j = jitter if jitter is not None else (0.0 if style in FACET_STYLES else 0.06)
-            m = mesh.culled_quads(part, model.palette, jitter=j, ao=True)
+            m = mesh.culled_quads(part, model.palette, jitter=j, ao=style not in FLAT_STYLES)   # baked AO would stripe the chamfers
         if m.n_faces == 0:
             continue
         ob = make_mesh_object(part.name or "part", m)
@@ -579,7 +580,7 @@ def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float |
             assign_palette_materials(ob, m, mat_cache)
             ew = mesh.step_edge_weights(m, part, mode="all" if style == "facet_all" else "steps", min_run=2,
                                         step=int(facet_step))
-            add_chamfer(ob, ew, 0.5 * facet_step * part.voxel_size)
+            add_chamfer(ob, ew, CHAMFER_FRACTION * facet_step * part.voxel_size)
             for key, val in ew.stats.items():
                 chamfer[key] = chamfer.get(key, 0) + val
         p = godot_to_blender(m.positions)

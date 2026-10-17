@@ -80,7 +80,7 @@ CHAR_PART = {("face", "m"): "beard"}
 SYMMETRIC_PARTS = ("skull", "beard")
 #: the layer that gives the skull form (a profile map, first in the write order)
 SKULL_LAYER = "skull"
-VIEWS = ("front", "side", "profile")
+VIEWS = ("front", "side", "profile", "sdf")   # sdf: the skull form from voxgen.sdfhead
 #: free space (units) around the maps' bounds; the frame is then rounded outward to whole units
 FRAME_MARGIN = 0.5
 
@@ -154,6 +154,8 @@ def is_front(layer: dict) -> bool:
 def fills(layer: dict) -> dict[str, tuple[float, float]]:
     """char -> (lo, hi) of the box along the view's normal: ``depth`` for a front or side map,
     (-w, w) from ``width`` for a profile map."""
+    if layer["view"] == "sdf":
+        return {}
     if layer["view"] == "profile":
         if "depth" in layer:
             raise ValueError("a profile map takes width, not depth")
@@ -186,6 +188,9 @@ def char_grid(layer: dict) -> np.ndarray:
 def layer_bounds(layer: dict) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float] | None]:
     """((x0, x1), (y0, y1), (z0, z1)) in units that the map's grid and its fill boxes can touch
     (a mirror map counts both halves); the depth axis is None for a paint-only layer."""
+    if layer["view"] == "sdf":
+        from . import sdfhead
+        return sdfhead.layer_extent(layer)
     cell = float(layer["cell"])
     o, y0 = layer["origin"]
     nrows, ncols = char_grid(layer).shape
@@ -232,8 +237,8 @@ class SheetFrame(Frame):
 def make_frame(layers) -> SheetFrame:
     """The frame of a layer list: extent from :func:`frame_extent`, local z = 0 at ``SKULL_MID_Z``."""
     skull = dict(layers).get(SKULL_LAYER)
-    if skull is None or skull["view"] != "profile":
-        raise ValueError(f"maps need a profile layer named {SKULL_LAYER!r}")
+    if skull is None or skull["view"] not in ("profile", "sdf"):
+        raise ValueError(f"maps need a profile or sdf layer named {SKULL_LAYER!r}")
     return SheetFrame(frame_extent(layers))
 
 
@@ -362,6 +367,12 @@ def apply_layer(bd: Builder, parts: dict[str, Part], name: str, layer: dict, rng
     ``{"part": ..., "added": n, "painted": n, "cut": n, "empty_cells": [(char, row, col), ...]}``
     where ``empty_cells`` lists the fill cells whose box was clipped away entirely."""
     f = bd.f
+    if layer["view"] == "sdf":
+        from . import sdfhead
+        part = _get_part(bd, parts, LAYER_PART.get(name, name))
+        mask = sdfhead.voxelize(f, layer) & ~bd.occupied
+        bd.paint(part, mask, layer.get("colour", "skin"), material_id(layer.get("material", "MAT_SKIN")), True)
+        return {"part": part.name, "added": int(mask.sum()), "painted": 0, "cut": 0, "empty_cells": []}
     fl = fills(layer)
     shell = layer.get("shell", {})
     paint = layer.get("paint", {})
@@ -496,6 +507,34 @@ def reskin(bd: Builder, part: Part) -> int:
     return int(sel.sum())
 
 
+_FEATURE_DEFAULTS = None
+
+
+def set_features(features: dict | None) -> None:
+    """Override the engine's feature blocks from a skull layer's ``features`` dict (units): ``ears``
+    and ``notches`` as (x0, x1, y0, y1, z0, z1) for the +x side (mirrored), ``cavity_x``,
+    ``cavity_y``, ``lip_slit_y``, ``nostril`` as (x0, x1, y0, y1, z0, z1) for +x. None restores the
+    defaults (the profile-map skull of barber_maps)."""
+    global EARS, EAR_NOTCHES, CAVITY_X, CAVITY_Y, LIP_SLIT_Y, NOSTRILS, _FEATURE_DEFAULTS
+    if _FEATURE_DEFAULTS is None:
+        _FEATURE_DEFAULTS = (EARS, EAR_NOTCHES, CAVITY_X, CAVITY_Y, LIP_SLIT_Y, NOSTRILS)
+    EARS, EAR_NOTCHES, CAVITY_X, CAVITY_Y, LIP_SLIT_Y, NOSTRILS = _FEATURE_DEFAULTS
+    if not features:
+        return
+    if "ears" in features:
+        EARS = both(Block(*features["ears"]))
+    if "notches" in features:
+        EAR_NOTCHES = both(Block(*features["notches"]))
+    if "cavity_x" in features:
+        CAVITY_X = tuple(features["cavity_x"])
+    if "cavity_y" in features:
+        CAVITY_Y = tuple(features["cavity_y"])
+    if "lip_slit_y" in features:
+        LIP_SLIT_Y = float(features["lip_slit_y"])
+    if "nostril" in features:
+        NOSTRILS = both(Block(*features["nostril"]))
+
+
 def paint_nostrils(bd: Builder, skull: Part) -> None:
     for b in NOSTRILS:
         bd.recolor(skull, bd.f.mask(b), NOSTRIL_COLOUR)
@@ -541,6 +580,7 @@ def build_parts(maps, seed: int = 1, layers=None) -> tuple[Builder, dict[str, Pa
     layers = list(maps.LAYERS if layers is None else layers)
     if not layers or layers[0][0] != SKULL_LAYER:
         raise ValueError(f"the first layer must be {SKULL_LAYER!r}")
+    set_features(layers[0][1].get("features"))
     pal = make_sheet_palette(maps.COLOURS)
     bd = Builder(make_frame(layers), pal)
     parts: dict[str, Part] = {}

@@ -112,6 +112,29 @@ def test_step_edge_weights_marks_steps_not_cubes_and_min_run_skips_lone_bumps():
     assert mesh.step_edge_weights(m, slab).weights.sum() == 0
 
 
+def test_step_edge_weights_step2_chamfers_two_voxel_staircases():
+    from voxgen import Part
+    from voxgen.materials import MAT_SKIN
+    # three 2-voxel steps (x 1..2 / 3..4 / 5..6 hold columns of height 6, 4, 2; 4 voxels wide in z)
+    st = Part("stairs2", (8, 8, 6), 0.01)
+    for x0, h in ((1, 6), (3, 4), (5, 2)):
+        st.material[1:5, 1:1 + h, x0:x0 + 2] = MAT_SKIN
+    m = mesh.culled_quads(st, [(200, 150, 120)], jitter=0.0)
+    assert mesh.step_edge_weights(m, st).weights.sum() == 0        # no one-voxel step anywhere
+    ew = mesh.step_edge_weights(m, st, step=2)
+    assert ew.stats["edges_step"] > 16 and ew.stats["edges_90"] > ew.stats["edges_step"]
+    for z in range(1, 5):
+        assert _edge_weight(m, ew, (3, 7, z), (3, 7, z + 1), st) == 1.0   # convex: tread / riser
+        assert _edge_weight(m, ew, (3, 5, z), (3, 5, z + 1), st) == 1.0   # concave: riser / next tread
+        assert _edge_weight(m, ew, (5, 5, z), (5, 5, z + 1), st) == 1.0
+        assert _edge_weight(m, ew, (5, 3, z), (5, 3, z + 1), st) == 1.0
+    assert _edge_weight(m, ew, (1, 1, 1), (1, 1, 2), st) == 0.0           # the tall column's bottom edge (6 and 6)
+    assert _edge_weight(m, ew, (1, 7, 1), (1, 7, 2), st) == 1.0           # its 2-wide top counts, as a 1-wide one does for step=1
+    assert _edge_weight(m, ew, (3, 5, 1), (3, 6, 1), st) == 1.0           # the riser meets the 2-wide side wall
+    with pytest.raises(ValueError):
+        mesh.step_edge_weights(m, st, step=0)
+
+
 def _sphere_part(n=32, vs=0.005, r=0.0525):
     p = Part("s", (n, n, n), vs, origin=(-n * vs / 2,) * 3)
     f = sdf.sphere(p, (0, 0, 0), r)

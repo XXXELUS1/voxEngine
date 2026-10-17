@@ -162,23 +162,25 @@ BEARD = dict(
 )
 
 # Beret, front map: 1/2 U cells, full width (x -9..9), rows y 18 -> 10. Letters give the z extent
-# (mixed along a row so the plan outline is ragged, narrower letters at the ends so the plan is
-# rounded): A -3..17, B -2..16, C -1..14.5 (band), D 0..13, E 1..11 (crumples). Slouch to -x.
+# (mixed along a row so the plan outline is ragged, narrower letters toward the ends and toward the
+# top so the plan is rounded and the cap is a dome, not a slab): A -2.5..17, B -2..16, C -1..14.5
+# (band), D 0..13, E 1..11, F 2.5..9.5, G 4..8 (crown crumples). Slouch to -x.
 BERET = dict(
     view="front", cell=0.5, origin=(-9.0, 18.0), mirror=False, material="MAT_CLOTH",
-    depth={"A": (-3.0, 17.0), "B": (-2.0, 16.0), "C": (-1.0, 14.5), "D": (0.0, 13.0), "E": (1.0, 11.0)},
+    depth={"A": (-2.5, 17.0), "B": (-2.0, 16.0), "C": (-1.0, 14.5), "D": (0.0, 13.0), "E": (1.0, 11.0),
+           "F": (2.5, 9.5), "G": (4.0, 8.0)},
     palette={"red": 45, "red_light": 25, "red_dark": 20, "red_crease": 10}, block=1.5,
     rows=[
-        "................EEE...EE............",  # y 17.5-18 crumples
-        "..........EEDDDDDDDDDDDEE...........",  # y 17-17.5
-        "........DDDDDDDDDDDDDDDDDD..........",  # y 16.5-17
-        "......DDCCCCCCCDDDCCCCCCCCDD........",  # y 16-16.5
-        "....CCCCCCBBBBBBCCCCCBBBBBBBCC......",  # y 15.5-16
-        "...BBBBCCCBBBBBBBBBBBBBBBBBBCCC.....",  # y 15-15.5
-        "..CBBAAAABBBAAAAAAABBBAAAAABBC......",  # y 14.5-15
-        ".DCBBAAAAAAAAAAAAAAAAAAAAAAAABBC....",  # y 14-14.5
-        ".CBBAAAAAAAAAAAAAAAAAAAAAAAAAABBC...",  # y 13.5-14 widest
-        "DCBBAAAAAAAAAAAAAAAAAAAAAAAAAABBC...",  # y 13-13.5
+        "................GGG...GG............",  # y 17.5-18 crumples on the crown
+        "..........FFFFFFFFFFFFFFF...........",  # y 17-17.5 crown
+        "........FFEEEEEEEEEEEEEEFF..........",  # y 16.5-17
+        "......EEDDDDDDDDDDDDDDDDEEE.........",  # y 16-16.5
+        "....EDDDCCCCCCCCCCCCCCCCDDDE........",  # y 15.5-16
+        "...DDCCCCBBBBBBBBBBBBBBBCCCDD.......",  # y 15-15.5
+        "..DCCBBBBAAAAAAAAAAAAAABBBCCD.......",  # y 14.5-15
+        ".DCBBAAAAAAAAAAAAAAAAAAAAAABBCD.....",  # y 14-14.5
+        ".CBBAAAAAAAAAAAAAAAAAAAAAAAABBC.....",  # y 13.5-14 widest
+        "DCBBAAAAAAAAAAAAAAAAAAAAAAAAABBC....",  # y 13-13.5
         "DCBBBBBBBBBBBBBBBBBBBBBBBBBBBBCD....",  # y 12.5-13
         ".DDDDDCCCCCCCCCCCCCCCCCCCCCCCC......",  # y 12-12.5 band x -5.5..5.5, droop x -8.5..-6
         ".DDDDDDCCCCCCCCCCCCCCCCCCCCCC.......",  # y 11.5-12

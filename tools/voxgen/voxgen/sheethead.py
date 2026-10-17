@@ -6,8 +6,8 @@ The unit grid (U = 20 mm, ``FINE`` = 4 fine voxels of 5 mm per unit), the ``Bloc
 head form is used any more. The frame's extent is computed from the maps (the union of every
 layer's box plus ``FRAME_MARGIN``, rounded outward to whole units) and the model's metre origin
 puts x = 0 on the mirror plane, y = 0 at the chin's bottom skin row and z = 0 at the skull's
-mid-depth, where the ears stand (``SKULL_MID_Z``, the ear block's z centre: 6.5 U behind the
-cheek plane), so the head turns about its own centre in the lab.
+mid-depth (``SKULL_MID_Z``: halfway between the maps' cheek plane z = 0 and the back of the skull
+z = 13), so the head turns about its own centre in the lab.
 
 A map layer (see the maps module's docstring for the keys) is a grid of characters seen from the
 front (columns = x, depth along z), from the side (columns = z, depth along x) or as a *profile*
@@ -15,7 +15,13 @@ front (columns = x, depth along z), from the side (columns = z, depth along x) o
 For every cell holding a fill char (``depth`` for front / side maps, ``width`` for profile maps)
 the engine fills the cell's box into the layer's part, clipped by every voxel already solid in
 any part (so a later layer never overwrites an earlier one and the skull stays whole under
-everything shaveable); ``mirror`` maps give the x <= 0 half and are mirrored about x = 0. Added
+everything shaveable); a ``shell`` char fills instead, over the cell's whole depth, the
+dilation by its thickness of everything placed before the layer (:func:`dilate`: the six axis
+directions, one voxel at a time, so a shell rounds convex corners at 45 degrees; the layer's
+own earlier chars do not count, so every char's thickness is measured from the same base)
+where nothing is solid yet, so a beard hugs whatever jaw is under it; ``mirror`` maps give the
+x <= 0 half
+and are mirrored about x = 0. Added
 voxels are coloured by ``paint[char]`` if present, else by the layer's ``colour``, else by the
 seeded lattice of ``palette`` / ``block``: one colour per lattice cell of ``block`` units,
 anchored at the frame origin, drawn once per part, so the two hair maps (front and side) agree.
@@ -27,11 +33,14 @@ skin), unless ``materials`` names one for the char; a paint char without a reces
 material of the voxel it recolours. ``materials`` overrides the material per char.
 
 The skull: the first layer must be the profile map named ``skull`` (its fill is the skin form of
-the skull and neck). The engine then adds the ears (``EARS``), cuts the hidden mouth cavity
-(``CAVITY_X`` x ``CAVITY_Y``, ``CAVITY_DEPTH`` deep behind the face surface it finds there),
-layers the whole form by depth (skin 2 fine, fat, muscle, bone: ``voxchar.HEAD_BANDS``), stands
-the eight teeth (``blockhead.TEETH_X``) against the cavity's back wall and shades the neck
-(y < 0) in ``NECK_TONE``. A layer that recesses re-skins the part afterwards (:func:`reskin`:
+the skull and neck). The engine then adds the ears (``EARS``, 1 U proud) with a notch cut into
+each outer face (``EAR_NOTCHES``, its floor and walls painted ``NOTCH_TONE``), cuts the mouth
+cavity (``CAVITY_X`` x ``CAVITY_Y``, ``CAVITY_DEPTH`` deep from the face surface it finds there,
+open to the front: a clean-shaven head shows the mouth as a dark line), layers the whole form by
+depth (skin 2 fine, fat, muscle, bone: ``voxchar.HEAD_BANDS``), stands the teeth (``TEETH_X``:
+seven 2-fine teeth with 1-fine gaps fill the 5 U back wall exactly, mirror-exact, the middle
+tooth on the axis - eight such teeth would need 5.75 U) against the cavity's back wall and
+shades the neck (y < 0) in ``NECK_TONE``. A layer that recesses re-skins the part afterwards (:func:`reskin`:
 every fat / muscle / bone voxel the cut left within the skin band of the new surface becomes
 skin, so a socket's walls never show fat). After the ``face`` layer the two nostrils
 (``NOSTRILS``: one fine voxel wide at x = +-0.5, 2 fine deep) are painted dark on the nose
@@ -54,7 +63,7 @@ from types import ModuleType
 import numpy as np
 
 from . import materials as M
-from .blockhead import FINE, TEETH_X, U_M, VOXEL, Block, Builder, Frame, both, make_palette
+from .blockhead import FINE, U_M, VOXEL, Block, Builder, Frame, both, make_palette
 from .model import Model, Part
 from .voxchar import HEAD_BANDS, crop_part, depth_map, layer_tissues
 
@@ -72,12 +81,20 @@ VIEWS = ("front", "side", "profile")
 #: free space (units) around the maps' bounds; the frame is then rounded outward to whole units
 FRAME_MARGIN = 0.5
 
-#: the ears: skin blocks on the skull's sides, at the skull's mid-depth
-EARS = both(Block(5, 5.5, 4, 7, 5, 8))
-#: the skull's mid-depth in units (the ear block's z centre): the model's local z = 0
-SKULL_MID_Z = (EARS[0].z0 + EARS[0].z1) / 2
+#: the skull's mid-depth in units (the maps put the cheek plane at z = 0, the back at z = 13):
+#: the model's local z = 0
+SKULL_MID_Z = 6.5
+#: the ears: skin blocks 1 U proud on the skull's sides
+EARS = both(Block(5, 6, 4, 7, 7, 10))
+#: the ear's notch: a 1 x 1 U pit cut 0.5 U into the ear's outer face; its floor and walls are
+#: painted in ``NOTCH_TONE``
+EAR_NOTCHES = both(Block(5.5, 6, 5, 6, 8, 9))
+NOTCH_TONE = "skin_shadow"
 #: the mouth cavity: x and y ranges and the depth (units) cut from the face surface backwards
-CAVITY_X, CAVITY_Y, CAVITY_DEPTH = (-1.5, 1.5), (3.25, 3.75), 1.0
+CAVITY_X, CAVITY_Y, CAVITY_DEPTH = (-2.5, 2.5), (3.25, 3.75), 1.0
+#: fine x of each tooth's left edge (x = k / FINE) and the tooth width in fine voxels: seven
+#: 2-fine teeth with 1-fine gaps across the 5 U back wall (mirror-exact)
+TEETH_X, TOOTH_W = (-10, -7, -4, -1, 2, 5, 8), 2
 #: the teeth stand this deep (units) against the cavity's back wall
 TOOTH_DEPTH = 0.25
 #: the nostrils: the bottom-front fine voxels of the nose cube's underside (y = 4.5)
@@ -177,17 +194,20 @@ def layer_bounds(layer: dict) -> tuple[tuple[float, float], tuple[float, float],
     return normal, ys, along
 
 
-def frame_extent(maps, margin: float = FRAME_MARGIN) -> tuple[tuple[float, float], ...]:
+def frame_extent(layers, margin: float = FRAME_MARGIN) -> tuple[tuple[float, float], ...]:
     """The frame extent ((x0, x1), (y0, y1), (z0, z1)) in whole units around every layer of
-    ``maps`` and the engine's own blocks, with ``margin`` units of air."""
+    ``layers`` (a list of (name, layer)) and the engine's own blocks, with ``margin`` units of
+    air; symmetric in x."""
     lo, hi = [np.inf] * 3, [-np.inf] * 3
-    for _, layer in maps.LAYERS:
+    for _, layer in layers:
         for i, rng in enumerate(layer_bounds(layer)):
             if rng is not None:
                 lo[i], hi[i] = min(lo[i], rng[0]), max(hi[i], rng[1])
     for b in EARS + NOSTRILS:
         for i, (a, c) in enumerate(((b.x0, b.x1), (b.y0, b.y1), (b.z0, b.z1))):
             lo[i], hi[i] = min(lo[i], a), max(hi[i], c)
+    half_x = max(-lo[0], hi[0])
+    lo[0], hi[0] = -half_x, half_x
     return tuple((float(np.floor(a - margin)), float(np.ceil(c + margin))) for a, c in zip(lo, hi))
 
 
@@ -203,13 +223,12 @@ class SheetFrame(Frame):
         return (self.lo[0] * U_M, self.lo[1] * U_M, (self.lo[2] - self.mid_z) * U_M)
 
 
-def make_frame(maps) -> SheetFrame:
-    """The frame of ``maps``: extent from :func:`frame_extent`, local z = 0 at ``SKULL_MID_Z``."""
-    layers = dict(maps.LAYERS)
-    skull = layers.get(SKULL_LAYER)
+def make_frame(layers) -> SheetFrame:
+    """The frame of a layer list: extent from :func:`frame_extent`, local z = 0 at ``SKULL_MID_Z``."""
+    skull = dict(layers).get(SKULL_LAYER)
     if skull is None or skull["view"] != "profile":
         raise ValueError(f"maps need a profile layer named {SKULL_LAYER!r}")
-    return SheetFrame(frame_extent(maps))
+    return SheetFrame(frame_extent(layers))
 
 
 def _along(f: Frame, layer: dict) -> np.ndarray:
@@ -305,13 +324,30 @@ def _get_part(bd: Builder, parts: dict[str, Part], pname: str) -> Part:
 
 
 def _chars_in_order(layer: dict) -> list[str]:
+    """The layer's chars in order of first appearance, the fill chars (depth, width, shell) first."""
     seen: list[str] = []
     for row in layer["rows"]:
         for ch in row:
             if ch != "." and ch not in seen:
                 seen.append(ch)
-    fl = fills(layer)
+    fl = set(fills(layer)) | set(layer.get("shell", {}))
     return [ch for ch in seen if ch in fl] + [ch for ch in seen if ch not in fl]
+
+
+def dilate(mask: np.ndarray, n: int) -> np.ndarray:
+    """``mask`` grown ``n`` times by one voxel along the six axis directions (no wrap-around): the
+    L1 ball, so a shell grown this way meets a convex corner with a 45 degree chamfer."""
+    out = mask.copy()
+    for _ in range(int(n)):
+        grown = out.copy()
+        for ax in range(out.ndim):
+            head = [slice(None)] * out.ndim
+            tail = [slice(None)] * out.ndim
+            head[ax], tail[ax] = slice(1, None), slice(None, -1)
+            grown[tuple(head)] |= out[tuple(tail)]
+            grown[tuple(tail)] |= out[tuple(head)]
+        out = grown
+    return out
 
 
 # ---------------------------------------------------------------------------- layers
@@ -321,6 +357,7 @@ def apply_layer(bd: Builder, parts: dict[str, Part], name: str, layer: dict, rng
     where ``empty_cells`` lists the fill cells whose box was clipped away entirely."""
     f = bd.f
     fl = fills(layer)
+    shell = layer.get("shell", {})
     paint = layer.get("paint", {})
     recess = layer.get("recess", {})
     mats = layer.get("materials", {})
@@ -328,14 +365,23 @@ def apply_layer(bd: Builder, parts: dict[str, Part], name: str, layer: dict, rng
     target = LAYER_PART.get(name, name)
     report = {"part": target, "added": 0, "painted": 0, "cut": 0, "empty_cells": []}
     grid = char_grid(layer)
+    base = bd.occupied.copy() if shell else None       # what the shell chars grow from: placed before this layer
     for ch in _chars_in_order(layer):
         pname = CHAR_PART.get((name, ch), target)
         part = _get_part(bd, parts, pname)
         mat = material_id(mats[ch]) if ch in mats else base_mat
         plane = footprint(f, layer, ch)
-        if ch in fl:
-            lo, hi = fl[ch]
-            mask = extrude(f, layer, plane, lo, hi) & ~bd.occupied
+        if ch in fl and ch in shell:
+            raise ValueError(f"layer {name!r}: char {ch!r} is both a depth and a shell char")
+        if ch in fl or ch in shell:
+            if ch in fl:
+                lo, hi = fl[ch]
+                mask = extrude(f, layer, plane, lo, hi) & ~bd.occupied
+            else:
+                n = float(shell[ch]) * FINE
+                if abs(n - round(n)) > 1e-9:
+                    raise ValueError(f"layer {name!r}: shell {shell[ch]} U is not a whole number of fine voxels")
+                mask = extrude(f, layer, plane, -np.inf, np.inf) & dilate(base, int(round(n))) & ~bd.occupied
             part.material[mask] = np.uint8(mat)
             if ch in paint:
                 part.color[mask] = np.uint8(bd.pal.index(paint[ch]))
@@ -397,22 +443,27 @@ def cavity_block(f: Frame, form: np.ndarray) -> Block:
 
 
 def finish_skull(bd: Builder, part: Part) -> Block:
-    """Turn the skull layer's skin fill into the skull: ears, the mouth cavity with its teeth,
-    the tissues by depth, the neck tone. Returns the cavity block."""
+    """Turn the skull layer's skin fill into the skull: the ears with their notches, the mouth
+    cavity with its teeth, the tissues by depth, the neck and notch tones. Returns the cavity block."""
     f = bd.f
     form = part.solid()
     for b in EARS:
         form |= f.mask(b)
     cavity = cavity_block(f, form)
     hollow = f.mask(cavity)
+    notches = np.zeros(f.shape, bool)
+    for b in EAR_NOTCHES:
+        notches |= f.mask(b)
+    hollow |= notches
     form &= ~hollow
     part.material[~form] = 0
     part.color[~form] = 0
     layer_tissues(part, form, HEAD_BANDS, bd.pal.index)
     bd.recolor(part, f.full(f.Y < 0), NECK_TONE)
+    bd.recolor(part, dilate(notches, 1) & ~notches, NOTCH_TONE)     # the notch's floor and walls
     for k in TEETH_X:
-        bd.place(part, Block(k / 4, k / 4 + 0.25, cavity.y0, cavity.y1, cavity.z1 - TOOTH_DEPTH, cavity.z1,
-                             "tooth", M.MAT_TOOTH), clip=False)
+        bd.place(part, Block(k / FINE, (k + TOOTH_W) / FINE, cavity.y0, cavity.y1, cavity.z1 - TOOTH_DEPTH,
+                             cavity.z1, "tooth", M.MAT_TOOTH), clip=False)
     bd.occupied &= ~hollow
     bd.occupied |= part.solid()
     return cavity
@@ -470,16 +521,18 @@ def make_sheet_palette(colours: dict[str, str]):
     return pal
 
 
-def build_parts(maps, seed: int = 1) -> tuple[Builder, dict[str, Part], dict]:
-    """The uncropped parts on the frame (write order preserved) and the per-layer reports."""
-    if not maps.LAYERS or maps.LAYERS[0][0] != SKULL_LAYER:
+def build_parts(maps, seed: int = 1, layers=None) -> tuple[Builder, dict[str, Part], dict]:
+    """The uncropped parts on the frame (write order preserved) and the per-layer reports;
+    ``layers`` (a list of (name, layer)) replaces ``maps.LAYERS``."""
+    layers = list(maps.LAYERS if layers is None else layers)
+    if not layers or layers[0][0] != SKULL_LAYER:
         raise ValueError(f"the first layer must be {SKULL_LAYER!r}")
     pal = make_sheet_palette(maps.COLOURS)
-    bd = Builder(make_frame(maps), pal)
+    bd = Builder(make_frame(layers), pal)
     parts: dict[str, Part] = {}
     rng = np.random.default_rng(seed)
     reports: dict[str, list[dict]] = {}
-    for lname, layer in maps.LAYERS:
+    for lname, layer in layers:
         rep = apply_layer(bd, parts, lname, layer, rng)
         reports.setdefault(lname, []).append(rep)
         if lname == SKULL_LAYER:
@@ -493,11 +546,12 @@ def build_parts(maps, seed: int = 1) -> tuple[Builder, dict[str, Part], dict]:
     return bd, parts, reports
 
 
-def build_head(seed: int = 1, maps=None, name: str = "barber") -> Model:
+def build_head(seed: int = 1, maps=None, name: str = "barber", layers=None) -> Model:
     """The relief-map head as a model of cropped parts; ``maps`` is a module (or namespace) with
-    ``LAYERS`` and ``COLOURS``, by default the barber's."""
+    ``LAYERS`` and ``COLOURS``, by default the barber's; ``layers`` (a list of (name, layer))
+    replaces ``maps.LAYERS`` (a bald head: the skull and face layers only)."""
     maps = maps if maps is not None else load_maps(DEFAULT_MAPS)
-    bd, parts, reports = build_parts(maps, seed)
+    bd, parts, reports = build_parts(maps, seed, layers)
     meta = {"generator": "sheethead", "unit_mm": round(U_M * 1000, 3), "voxel_mm": round(VOXEL * 1000, 3),
             "seed": seed, "maps": str(getattr(maps, "__file__", "")), "reference": "docs/reference/barber-head.md",
             "frame": [list(r) for r in bd.f.extent], "mid_z": bd.f.mid_z}

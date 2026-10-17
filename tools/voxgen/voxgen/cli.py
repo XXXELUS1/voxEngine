@@ -6,9 +6,10 @@
     voxgen check <file.vxm>
     voxgen import-vox <file.vox> --spec-json <file.vox.json> --out <file.vxm>
     voxgen info <file.vxm>
-    voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,clay,toon]
+    voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,clay,toon,mix]
                   [--light studio|candle] [--views three_quarter,front,profile,full] [--size 640]
-                  [--samples 96] [--bg dark|grey|light]
+                  [--samples 96] [--bg dark|grey|light] [--part-styles head=smooth,hair=facet]
+                  [--smooth-passes 2] [--smooth-clamp cell|free] [--smooth-inflate 0]
                   [--out build/renders/<name>/] [--cubic-materials 5,8] [--jitter 0] [--save-blend]
     voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]
 
@@ -29,7 +30,7 @@ from pathlib import Path
 
 from . import __version__, checks, io_vox, io_vxm
 from . import materials as M
-from .blender import BACKGROUNDS, LIGHTS, STYLES, VIEWS
+from .blender import BACKGROUNDS, LIGHTS, PART_STYLES, SMOOTH_CLAMPS, STYLES, VIEWS, parse_part_styles
 from .model import Model
 from .render import SLICE_VIEWS, VIEW_NAMES, contact_sheet, render_views
 
@@ -306,6 +307,7 @@ def cmd_render(args) -> int:
     styles = _csv(args.styles, STYLES, "styles")
     views = _csv(args.views, list(VIEWS), "views")
     cubic = _material_ids(args.cubic_materials)
+    parse_part_styles(args.part_styles)  # validate before the slow part
     py = blender_python()
     src = Path(args.model)
     if src.suffix == ".py":
@@ -333,6 +335,10 @@ def cmd_render(args) -> int:
             cmd += ["--cubic-materials", ",".join(str(v) for v in cubic)]
         if args.jitter is not None:
             cmd += ["--jitter", str(args.jitter)]
+        if args.part_styles:
+            cmd += ["--part-styles", args.part_styles]
+        cmd += ["--smooth-passes", str(args.smooth_passes), "--smooth-clamp", args.smooth_clamp,
+                "--smooth-inflate", str(args.smooth_inflate)]
         if args.save_blend:
             cmd += ["--save-blend", str(png.with_suffix(".blend").resolve())]
         t0 = time.perf_counter()
@@ -429,6 +435,14 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--jitter", type=float, default=None,
                    help="per-voxel colour jitter of the cubes/bevel mesher (default 0.06, facet styles 0; "
                         "0 = flat palette colours)")
+    p.add_argument("--part-styles", default="",
+                   help="per-part style overrides, part=style comma list (styles: " + ",".join(PART_STYLES) + "); "
+                        "style mix = skin parts smooth, the rest facet")
+    p.add_argument("--smooth-passes", type=int, default=2, help="Laplacian passes of the smooth parts (default 2)")
+    p.add_argument("--smooth-clamp", default="cell", choices=SMOOTH_CLAMPS,
+                   help="surface-nets clamp: cell (vertices stay in their cell, default) or free (volume restored)")
+    p.add_argument("--smooth-inflate", type=float, default=0.0,
+                   help="offset the smooth surface outward by this many voxels (0..0.5, closes seams against cubes)")
     p.add_argument("--save-blend", action="store_true", help="also save a .blend next to each png")
     p.set_defaults(func=cmd_render)
 

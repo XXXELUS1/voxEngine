@@ -66,11 +66,23 @@ def make_sheet(dir_path, out=None, tile: int = 640, cols: int = 3, pad: int = 12
             im = im.resize((tile, tile), Image.LANCZOS)
         sheet.paste(im, (x, y))
         style = info.get("style", png.stem)
-        d.text((x + 10, y + tile + 4), style, font=f_big, fill=(235, 235, 235))
+        mapping = info.get("part_styles") or {}
+        if mapping and len(set(mapping.values())) > 1:  # per-part styles: "mix [head=smooth hair,eye_l=facet]"
+            by_style: dict[str, list[str]] = {}
+            for part, st in mapping.items():
+                by_style.setdefault(st, []).append(part)
+            style += "  [" + "  ".join(f"{','.join(parts)}={st}" for st, parts in by_style.items()) + "]"
+        d.text((x + 10, y + tile + 4), style, font=_fit_font(d, style, tile - 20, FONT_B, (22, 20, 18, 16, 14, 12)),
+               fill=(235, 235, 235))
         faces = info.get("faces")
         faces_txt = f"{faces:,} faces" if isinstance(faces, int) else "? faces"
         txt = (f"{info.get('view', '?')} / {info.get('light', '?')}  |  {info.get('engine', '?')} "
                f"{info.get('samples', '?')} spl  |  {info.get('render_seconds', '?')} s  |  {faces_txt}")
+        sm = info.get("smooth")
+        if sm and "smooth" in mapping.values():
+            txt += f"  |  nets {sm.get('clamp', '?')} x{sm.get('passes', '?')}"
+            if sm.get("inflate"):
+                txt += f" +{sm['inflate']:g}"
         d.text((x + 10, y + tile + 34), txt, font=_fit_font(d, txt, tile - 20, FONT), fill=(170, 170, 175))
     info0 = tiles[0][1]
     foot = (f"{info0.get('model', dir_path.name)}  {info0.get('dims', '')} @ {info0.get('voxel_mm', '?')} mm   -   "

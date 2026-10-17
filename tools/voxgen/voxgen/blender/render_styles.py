@@ -7,10 +7,16 @@ per run; ``voxgen render`` drives this as a subprocess of the bpy venv:
 Styles (``voxgen.blender.STYLES``): cubes (culled quads, full AO), bevel (cubes + Bevel modifier),
 facet (cubes whose one-voxel steps are chamfered to 45 degree slopes: ``mesh.step_edge_weights``
 with ``min_run=2`` + a Bevel limited by edge weight, 0.5 voxel, 1 segment), facet_all (every
-90 degree edge chamfered), smooth (surface nets, per-face voxel colour), clay (smooth + subsurface
-+ thumb-mark bumps), toon (EEVEE, 3-step ramp + Freestyle outline). The facet styles use one flat
-material per palette colour (constant colour x corner AO) instead of the corner colour attribute,
-so the bevel faces inherit a whole colour and never blend two; their colour jitter defaults to 0.
+90 degree edge chamfered), smooth (surface nets, shade smooth, per-face voxel colour, skin material:
+roughness 0.6, no bump, weak subsurface 0.1), clay (smooth + subsurface + thumb-mark bumps), toon
+(EEVEE, 3-step ramp + Freestyle outline), mix (per part: skin parts smooth, the rest facet, see
+``voxgen.blender.resolve_part_styles``; ``--part-styles head=smooth,hair=facet`` overrides any
+mapping). ``--smooth-passes N`` and ``--smooth-clamp cell|free`` (``mesh.surface_nets``: cell keeps
+the vertices in their cell, free restores the volume instead) and ``--smooth-inflate V`` (outward
+offset in voxels, closes the groove against cubic hair) tune the smooth parts. The facet styles use
+one flat material per palette colour (constant colour x corner AO) instead of the corner colour
+attribute, so the bevel faces inherit a whole colour and never blend two; their colour jitter
+defaults to 0.
 Lights: studio (warm key 2700K, cool rim 8000K, soft fill) and candle (1850K point + faint 9000K
 rim). Backgrounds: dark, grey, and light (warm light-grey world and ground, a cooler softer rig,
 exposure -0.7). Views: camera presets around the model bbox (``voxgen.blender.VIEWS``). In the
@@ -37,10 +43,12 @@ import bpy  # noqa: E402
 from mathutils import Vector  # noqa: E402
 
 from voxgen import io_vxm, mesh  # noqa: E402
-from voxgen.blender import BACKGROUNDS, LIGHTS, STYLES, VIEWS  # noqa: E402
+from voxgen.blender import (BACKGROUNDS, LIGHTS, SMOOTH_CLAMPS, STYLES, VIEWS, parse_part_styles,  # noqa: E402
+                            resolve_part_styles)
 
 SMOOTH_STYLES = ("smooth", "clay", "toon")
 FACET_STYLES = ("facet", "facet_all")
+SMOOTH_DEFAULTS = {"passes": 2, "clamp": "cell", "inflate": 0.0, "jitter": 0.04}  # jitter: 0 in mix (flat skin)
 # background preset -> (world bottom, world top, world strength), ground colour, exposure
 WORLDS = {"dark": ((0.015, 0.015, 0.017), (0.11, 0.11, 0.12), 0.3),
           "grey": ((0.22, 0.22, 0.23), (0.55, 0.55, 0.57), 0.6),
@@ -139,7 +147,9 @@ def _base_color_nodes(nt, ao_strength: float, mute: float = 0.0):
     return out
 
 
-def material_principled(name, roughness, ao_strength, specular=0.5, clay=False):
+def material_principled(name, roughness, ao_strength, specular=0.5, clay=False, sss=0.0):
+    """Principled with the corner colour x AO; ``clay`` adds the muted colour, strong subsurface and
+    thumb-mark bumps, ``sss`` alone a weak skin subsurface (weight, no bumps)."""
     mat = bpy.data.materials.new(name)
     mat.use_nodes = True
     nt = mat.node_tree
@@ -152,6 +162,11 @@ def material_principled(name, roughness, ao_strength, specular=0.5, clay=False):
     nt.links.new(_base_color_nodes(nt, ao_strength, mute=0.12 if clay else 0.0), bsdf.inputs["Base Color"])
     bsdf.inputs["Roughness"].default_value = roughness
     bsdf.inputs["Specular IOR Level"].default_value = specular
+    if sss > 0 and not clay:
+        bsdf.inputs["Subsurface Weight"].default_value = sss
+        bsdf.inputs["Subsurface Radius"].default_value = (1.0, 0.4, 0.25)
+        bsdf.inputs["Subsurface Scale"].default_value = 0.004
+        bsdf.subsurface_method = "RANDOM_WALK_SKIN"
     if clay:
         bsdf.inputs["Subsurface Weight"].default_value = 0.35
         bsdf.inputs["Subsurface Radius"].default_value = (1.0, 0.5, 0.3)
@@ -467,26 +482,32 @@ def setup_render(engine, size, samples, out_path, freestyle=False, exposure=-0.2
 
 
 # ----------------------------------------------------------------------------- main
-def build_geometry(model, style: str, cubic_materials=(), jitter: float | None = None):
-    """One mesh object per part (each at its own origin). Returns (objects, bbox_min, bbox_max, faces,
-    chamfer stats). ``cubic_materials``: material ids rendered as cubes inside the smooth styles;
-    ``jitter``: the per-voxel colour jitter of the cube mesher (None = the style's default: 0 for the
-    facet styles, 0.06 otherwise; 0 = flat palette colours, the stylized look). The facet styles get
+def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float | None = None, smooth=None):
+    """One mesh object per part (each at its own origin), meshed by its own style (``part_styles``:
+    part name -> style). Returns (objects, styles per object, bbox_min, bbox_max, faces, chamfer
+    stats). ``cubic_materials``: material ids rendered as cubes inside the smooth styles; ``jitter``:
+    the per-voxel colour jitter of the cube mesher (None = the style's default: 0 for the facet
+    styles, 0.06 otherwise; 0 = flat palette colours, the stylized look); ``smooth``: the
+    ``SMOOTH_DEFAULTS`` dict (passes, clamp, inflate) of ``mesh.surface_nets``. The facet parts get
     their per-colour materials and the weighted Chamfer bevel here."""
-    if jitter is None:
-        jitter = 0.0 if style in FACET_STYLES else 0.06
-    objs, faces = [], 0
+    smooth = {**SMOOTH_DEFAULTS, **(smooth or {})}
+    objs, styles, faces = [], [], 0
     lo, hi = None, None
     mat_cache, chamfer = {}, {}
-    for part in model.parts:
+    for i, part in enumerate(model.parts):
+        style = part_styles[part.name or f"part{i}"]
         if style in SMOOTH_STYLES:
-            m = mesh.surface_nets(part, model.palette, smooth_passes=2, keep_cubic_materials=tuple(cubic_materials))
+            m = mesh.surface_nets(part, model.palette, smooth_passes=int(smooth["passes"]),
+                                  keep_cubic_materials=tuple(cubic_materials), clamp=smooth["clamp"],
+                                  inflate=float(smooth["inflate"]), jitter=smooth["jitter"])
         else:
-            m = mesh.culled_quads(part, model.palette, jitter=jitter, ao=True)
+            j = jitter if jitter is not None else (0.0 if style in FACET_STYLES else 0.06)
+            m = mesh.culled_quads(part, model.palette, jitter=j, ao=True)
         if m.n_faces == 0:
             continue
         ob = make_mesh_object(part.name or "part", m)
         objs.append(ob)
+        styles.append(style)
         faces += m.n_faces
         if style in FACET_STYLES:
             assign_palette_materials(ob, m, mat_cache)
@@ -499,17 +520,48 @@ def build_geometry(model, style: str, cubic_materials=(), jitter: float | None =
         hi = p.max(0) if hi is None else np.maximum(hi, p.max(0))
     if not objs:
         raise ValueError(f"model {model.name!r} has no solid voxels")
-    return objs, lo, hi, faces, chamfer
+    return objs, styles, lo, hi, faces, chamfer
 
 
-def assign_materials(objs, style: str, voxel_size: float):
-    if style in FACET_STYLES:
-        return  # per-colour flat materials were assigned in build_geometry
+def style_materials(style: str, cache: dict):
+    """(main, cubic-slot) materials of a part style, made once per style. ``smooth`` is the skin look
+    (roughness 0.6, half AO, weak subsurface, no bumps); ``cubic`` is slot 1 of a smooth mesh (the
+    hair/teeth cubes of ``--cubic-materials``), None where the style has no second slot."""
+    if style in cache:
+        return cache[style]
+    cubic = None
     if style == "cubes":
         m = material_principled("Cubes", roughness=0.8, ao_strength=1.0)
     elif style == "bevel":
         m = material_principled("Bevel", roughness=0.75, ao_strength=0.85)
-        for ob in objs:
+    elif style == "smooth":
+        m = material_principled("Smooth", roughness=0.6, ao_strength=0.5, sss=0.1)
+    elif style == "clay":
+        m = material_principled("Clay", roughness=0.55, ao_strength=0.4, specular=0.35, clay=True)
+    elif style == "toon":
+        m = material_toon("Toon", ao_strength=0.4)
+        cubic = m  # toon keeps one look
+    else:
+        raise ValueError(style)
+    if style in ("smooth", "clay"):
+        cubic = cache.get("_cubic") or material_principled("HairCubes", roughness=0.85, ao_strength=0.9, specular=0.3)
+        cache["_cubic"] = cubic
+    cache[style] = (m, cubic)
+    return cache[style]
+
+
+def assign_materials(objs, styles, voxel_size: float):
+    """Materials (and the Bevel modifier of ``bevel``) per object by its style; the facet objects
+    already carry their per-colour flat materials from ``build_geometry``."""
+    cache = {}
+    for ob, style in zip(objs, styles):
+        if style in FACET_STYLES:
+            continue
+        m, cubic = style_materials(style, cache)
+        ob.data.materials.append(m)
+        if cubic is not None:
+            ob.data.materials.append(cubic)
+        if style == "bevel":
             mod = ob.modifiers.new("Bevel", "BEVEL")
             mod.width = 0.25 * voxel_size
             mod.segments = 2
@@ -518,28 +570,12 @@ def assign_materials(objs, style: str, voxel_size: float):
             mod.harden_normals = True
             mod.miter_outer = "MITER_ARC"
             mod.use_clamp_overlap = True
-    elif style == "smooth":
-        m = material_principled("Smooth", roughness=0.6, ao_strength=0.5)
-    elif style == "clay":
-        m = material_principled("Clay", roughness=0.55, ao_strength=0.4, specular=0.35, clay=True)
-    elif style == "toon":
-        m = material_toon("Toon", ao_strength=0.4)
-    else:
-        raise ValueError(style)
-    # slot 1: hair/teeth cubes inside a smooth mesh (rougher, full AO); toon keeps one look
-    cubic = None
-    if style == "toon":
-        cubic = m
-    elif style in SMOOTH_STYLES:
-        cubic = material_principled("HairCubes", roughness=0.85, ao_strength=0.9, specular=0.3)
-    for ob in objs:
-        ob.data.materials.append(m)
-        if cubic is not None:
-            ob.data.materials.append(cubic)
 
 
 def render_one(model_path, style, light, view, size, samples, out, bg="dark", engine=None, save_blend=None,
-               index=None, cubic_materials=(), jitter: float | None = None) -> dict:
+               index=None, cubic_materials=(), jitter: float | None = None, part_styles=None, smooth=None) -> dict:
+    """``part_styles``: {part name: style} overrides on top of ``style`` (``mix`` maps skin parts to
+    smooth and the rest to facet); ``smooth``: surface-nets options, see ``SMOOTH_DEFAULTS``."""
     model = io_vxm.read(model_path)
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
@@ -547,11 +583,15 @@ def render_one(model_path, style, light, view, size, samples, out, bg="dark", en
 
     t0 = time.time()
     if jitter is None:
-        jitter = 0.0 if style in FACET_STYLES else 0.06
-    objs, bmin, bmax, faces, chamfer = build_geometry(model, style, cubic_materials, jitter)
+        jitter = 0.0 if style in FACET_STYLES or style == "mix" else 0.06
+    smooth = {**SMOOTH_DEFAULTS, **(smooth or {})}
+    if style == "mix" or (jitter == 0.0 and style in FACET_STYLES):
+        smooth["jitter"] = jitter  # flat palette colours on the smooth skin too (the stylized look)
+    mapping = resolve_part_styles(model, style, part_styles)
+    objs, styles, bmin, bmax, faces, chamfer = build_geometry(model, mapping, cubic_materials, jitter, smooth)
     size_m = bmax - bmin
     center = (bmin + bmax) / 2
-    assign_materials(objs, style, model.parts[0].voxel_size)
+    assign_materials(objs, styles, model.parts[0].voxel_size)
 
     # ground: y = 0 of the model space (props stand on it), or lower when the model goes below 0
     ground_z = min(0.0, float(bmin[2])) - 0.0005
@@ -584,7 +624,8 @@ def render_one(model_path, style, light, view, size, samples, out, bg="dark", en
         "style": style, "light": light, "view": view, "bg": bg, "engine": engine, "samples": spl, "size": size,
         "render_seconds": round(dt, 1), "setup_seconds": round(t_setup, 2),
         "verts": int(sum(len(o.data.vertices) for o in objs)), "faces": int(faces),
-        "model": model.name, "parts": [p.name for p in model.parts],
+        "model": model.name, "parts": [p.name for p in model.parts], "part_styles": mapping,
+        "smooth": {"passes": int(smooth["passes"]), "clamp": smooth["clamp"], "inflate": float(smooth["inflate"])},
         "dims": "x".join(str(v) for v in (p0.nx, p0.ny, p0.nz)) + ("+" if len(model.parts) > 1 else ""),
         "voxel_mm": round(p0.voxel_size * 1000, 2), "blender": bpy.app.version_string, "out": out,
         "cubic_materials": [int(v) for v in cubic_materials], "jitter": jitter,
@@ -613,12 +654,21 @@ def main(argv=None) -> int:
     ap.add_argument("--cubic-materials", default="",
                     help="comma list of material ids kept as cubes in smooth/clay/toon (e.g. 5,8 = tooth, hair)")
     ap.add_argument("--jitter", type=float, default=None,
-                    help="per-voxel colour jitter of the cube mesher (default 0.06, facet styles 0; 0 = none)")
+                    help="per-voxel colour jitter of the cube mesher (default 0.06, facet/mix styles 0; 0 = none)")
+    ap.add_argument("--part-styles", default="", help="per-part overrides, e.g. head=smooth,hair=facet")
+    ap.add_argument("--smooth-passes", type=int, default=SMOOTH_DEFAULTS["passes"],
+                    help="Laplacian passes of the smooth parts (default 2)")
+    ap.add_argument("--smooth-clamp", default=SMOOTH_DEFAULTS["clamp"], choices=SMOOTH_CLAMPS,
+                    help="cell (vertices stay in their cell) or free (no clamp, volume restored)")
+    ap.add_argument("--smooth-inflate", type=float, default=SMOOTH_DEFAULTS["inflate"],
+                    help="offset of the smooth surface along the normals, in voxels (0..0.5)")
     args = ap.parse_args(argv)
     cubic = [int(v) for v in args.cubic_materials.split(",") if v.strip()]
+    smooth = {"passes": args.smooth_passes, "clamp": args.smooth_clamp, "inflate": args.smooth_inflate}
     info = render_one(args.model, args.style, args.light, args.view, args.size, args.samples, args.out,
                       bg=args.bg, engine=args.engine, save_blend=args.save_blend, index=args.index,
-                      cubic_materials=cubic, jitter=args.jitter)
+                      cubic_materials=cubic, jitter=args.jitter, part_styles=parse_part_styles(args.part_styles),
+                      smooth=smooth)
     print("RENDER_INFO " + json.dumps(info), flush=True)
     return 0
 

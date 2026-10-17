@@ -19,9 +19,11 @@ voxgen preview <file.vxm|.vox|spec.py> [--out x.png] [--size 256] [--part NAME]
 voxgen check <file.vxm>                 печатает отчёт проверок (json) и возвращает 1 при ошибках
 voxgen import-vox <file.vox> --spec-json <file.vox.json> --out <file.vxm>
 voxgen info <file.vxm>                  части, размеры, число вокселей, материалы
-voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,clay,toon]
+voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,clay,toon,mix]
               [--light studio|candle] [--views three_quarter,front,profile,full] [--size 640] [--samples 96]
-              [--bg dark|grey|light] [--out build/renders/<name>/] [--cubic-materials 5,8] [--jitter 0] [--save-blend]
+              [--bg dark|grey|light] [--part-styles head=smooth,hair=facet] [--smooth-passes 2]
+              [--smooth-clamp cell|free] [--smooth-inflate 0]
+              [--out build/renders/<name>/] [--cubic-materials 5,8] [--jitter 0] [--save-blend]
     Красивые рендеры в Blender (bpy как python-модуль, venv из scripts/install_blender.sh:
     $VOXENGINE_BPY или ~/.cache/voxengine/venv-bpy; без него — понятная ошибка с командой установки).
     Для спека .py сначала собирает .vxm в godot/assets/models (без проверок). На каждую пару
@@ -36,13 +38,22 @@ voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,c
     цвет по вокселю), clay (smooth + подповерхностное + «отпечатки»), toon (EEVEE, 3-ступенчатая рампа
     + Freestyle); фон `--bg`: dark, grey, light (тёплый светло-серый мир и пол, экспозиция −0.7);
     в smooth-стилях волосы и зубы по умолчанию — часть гладкой поверхности; `--cubic-materials 5,8`
-    (id или имена материалов: tooth,hair) оставляет их кубиками. Код возврата 1, если хоть один рендер упал.
+    (id или имена материалов: tooth,hair) оставляет их кубиками. Стиль `mix` — по частям: часть, у
+    которой большинство открытых граней — кожа (skin + cartilage), рендерится как smooth (surface nets,
+    shade smooth, цвет по вокселю на грань, кожа: roughness 0.6, без бампа, слабый SSS 0.1), остальные
+    (волосы, глаза, очки, зубы) — facet; `--part-styles head=smooth,hair=facet` переопределяет карту
+    часть→стиль для любого стиля (стили частей: cubes,bevel,facet,facet_all,smooth,clay). Гладкие части:
+    `--smooth-passes N` (проходов Лапласа, по умолчанию 2), `--smooth-clamp cell|free` (cell — вершины не
+    выходят из своей ячейки; free — без зажима, объём восстанавливается общим сдвигом по нормали),
+    `--smooth-inflate V` (сдвиг наружу в вокселях, 0..0.5, закрывает щель у кубических волос). Карта
+    частей и параметры nets пишутся в .json и в подпись листа. Код возврата 1, если хоть один рендер упал.
 voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]   пересобрать контактный лист из рендеров
 ```
 
 Мешеры `voxgen.mesh` (чистый numpy, без Blender): `culled_quads(part, palette, jitter, ao)`,
 `step_edge_weights(mesh, part, mode='steps'|'all', min_run=2)` (веса фасок для `facet`) и
-`surface_nets(part, palette, smooth_passes, keep_cubic_materials=())` → `Mesh` (positions float32 (N,3) в
+`surface_nets(part, palette, smooth_passes, keep_cubic_materials=(), clamp='cell'|'free', inflate=0)` →
+`Mesh` (positions float32 (N,3) в
 метрах local space части, оси Godot; quads int32 (F,4) CCW снаружи; face_colors uint8 (F,4) rgb+ao;
 face_material; corner_ao; face_smooth; vertex_colors для surface nets).
 

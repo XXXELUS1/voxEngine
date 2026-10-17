@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from helpers import layered_ball
 from voxgen import mesh
@@ -26,6 +27,27 @@ def test_surface_nets_closed_and_volume_close():
     assert m.vertex_colors is not None and m.vertex_colors.shape == (len(m.positions), 4)
     expected = p.count_solid() * p.voxel_size ** 3
     assert 0.85 * expected < m.signed_volume() < 1.05 * expected
+
+
+def test_surface_nets_free_clamp_restores_volume_and_inflate_grows():
+    model, p = layered_ball(n=24, r=0.05)
+    expected = p.count_solid() * p.voxel_size ** 3
+    raw = mesh.surface_nets(p, model.palette, smooth_passes=0)
+    cell = mesh.surface_nets(p, model.palette, smooth_passes=3, clamp="cell")
+    free = mesh.surface_nets(p, model.palette, smooth_passes=3, clamp="free")
+    assert cell.is_closed() and free.is_closed() and len(free.positions) == len(raw.positions)
+    # cell-clamped Laplacian shrinks the ball, the free clamp restores the unsmoothed volume
+    assert cell.signed_volume() < 0.98 * raw.signed_volume()
+    assert abs(free.signed_volume() - raw.signed_volume()) < 0.005 * raw.signed_volume()
+    assert 0.95 * expected < free.signed_volume() < 1.05 * expected
+    # free vertices never stray far from their cell (half a voxel of play on a 10-voxel ball)
+    assert np.abs(free.positions - cell.positions).max() < 0.6 * p.voxel_size
+    # inflate pushes the surface outward along the normals: the radius grows by about that much
+    puffed = mesh.surface_nets(p, model.palette, smooth_passes=3, clamp="free", inflate=0.5)
+    r_free, r_puff = np.linalg.norm(free.positions, axis=1), np.linalg.norm(puffed.positions, axis=1)
+    assert 0.4 * p.voxel_size < (r_puff - r_free).mean() < 0.6 * p.voxel_size
+    with pytest.raises(ValueError):
+        mesh.surface_nets(p, model.palette, clamp="loose")
 
 
 def test_surface_nets_default_smooths_hair():

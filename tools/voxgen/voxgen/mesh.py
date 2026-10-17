@@ -5,11 +5,19 @@ Pure numpy, importable without Blender. Two builders, both returning a :class:`M
 * :func:`culled_quads` - one quad per exposed voxel face, vertices welded (so a Bevel modifier
   works), per-face palette colour with a deterministic per-voxel value jitter, per-corner AO
   (classic "0fps" 3-neighbour count).
-* :func:`surface_nets` - naive surface nets on the occupancy with cell-clamped Laplacian
-  smoothing; faces keep the colour of the voxel that owns them (crisp eyes, lips), vertices get
-  a "cavity" AO. Materials in ``keep_cubic_materials`` (empty by default, so hair and teeth are
-  part of the smooth surface; ``CUBIC_MATERIALS`` = teeth + hair restores the cubic look) are
-  excluded from the smooth surface and appended as culled cubes (culled against the full occupancy).
+* :func:`surface_nets` - naive surface nets on the occupancy with Laplacian smoothing
+  (``smooth_passes``); ``clamp="cell"`` keeps every vertex inside its own cell (the surface never
+  leaves the voxel skin, convex edges stay within half a voxel of the cubes), ``clamp="free"`` drops
+  the clamp and, after the passes, offsets every vertex along its normal by the one global distance
+  that restores the volume of the unsmoothed net (a Taubin lambda/mu pair was measured too: at the
+  classic 0.5/-0.53 three passes leave the 2-voxel staircase at 0.6 voxel peak-to-peak, where the
+  plain umbrella leaves 0.09, so the shrink is corrected afterwards instead); ``inflate`` then pushes
+  the vertices outward along their normal by that many voxels (0.5 max is sensible: it closes the
+  groove where a smooth skin part meets a cubic hair part). Faces keep the colour of
+  the voxel that owns them (crisp eyes, lips), vertices get a "cavity" AO. Materials in
+  ``keep_cubic_materials`` (empty by default, so hair and teeth are part of the smooth surface;
+  ``CUBIC_MATERIALS`` = teeth + hair restores the cubic look) are excluded from the smooth surface
+  and appended as culled cubes (culled against the full occupancy).
 * :func:`step_edge_weights` - per-edge chamfer weights for the "facet" look (cubes whose one-voxel
   steps become exact 45 degree slopes while big flat faces stay crisp). Rule, to be ported to C++
   as is: for every mesh edge shared by exactly two quads with different normals (a convex or
@@ -37,6 +45,7 @@ import numpy as np
 from . import materials as M
 
 CUBIC_MATERIALS = (M.MAT_TOOTH, M.MAT_HAIR)
+SMOOTH_CLAMPS = ("cell", "free")
 _AO_LEVELS = np.array([1.0, 0.78, 0.6, 0.45], np.float32)  # 0fps corner count -> brightness
 
 
@@ -203,7 +212,7 @@ def culled_quads(part, palette, jitter=0.06, ao=True, only_materials=None) -> Me
 
 
 # ----------------------------------------------------------------------------- surface nets
-def _surface_nets(material, color, pal, solid, smooth_passes, jitter, inset=0.02):
+def _surface_nets(material, color, pal, solid, smooth_passes, jitter, inset=0.02, clamp="cell", inflate=0.0):
     """Core of :func:`surface_nets`; positions in voxel corner units. Returns None when empty."""
     nz, ny, nx = material.shape
     occ = np.zeros((nz + 2, ny + 2, nx + 2), bool)
@@ -257,17 +266,30 @@ def _surface_nets(material, color, pal, solid, smooth_passes, jitter, inset=0.02
     quads = np.concatenate(all_quads).astype(np.int32)
     fvox = np.concatenate(all_fvox)
 
-    # Laplacian smoothing clamped to the cell
+    # Laplacian (umbrella) smoothing: "cell" clamps each vertex to its cell, "free" restores the volume
+    if clamp not in SMOOTH_CLAMPS:
+        raise ValueError(f"clamp must be one of {SMOOTH_CLAMPS}, not {clamp!r}")
     if smooth_passes > 0:
         e0 = np.concatenate([quads[:, i] for i in range(4)])
         e1 = np.concatenate([quads[:, (i + 1) % 4] for i in range(4)])
         ea, eb = np.concatenate([e0, e1]), np.concatenate([e1, e0])
         deg = np.bincount(ea, minlength=V).astype(np.float32)[:, None]
         lo, hi = cmin + inset, cmin + 1.0 - inset
+        v0 = _signed_volume(pos, quads)
         for _ in range(smooth_passes):
             acc = np.zeros_like(pos)
             np.add.at(acc, ea, pos[eb])
-            pos = np.minimum(np.maximum(acc / np.maximum(deg, 1), lo), hi)
+            pos = acc / np.maximum(deg, 1)
+            if clamp == "cell":
+                pos = np.minimum(np.maximum(pos, lo), hi)
+        if clamp == "free":
+            for _ in range(2):  # first-order volume restore along the normals, twice for accuracy
+                area = 0.5 * np.linalg.norm(np.cross(pos[quads[:, 2]] - pos[quads[:, 0]],
+                                                     pos[quads[:, 3]] - pos[quads[:, 1]]), axis=1).sum()
+                t = (v0 - _signed_volume(pos, quads)) / max(float(area), 1e-12)
+                pos = pos + np.float32(t) * _vertex_normals(pos, quads)
+    if inflate:
+        pos = pos + np.float32(inflate) * _vertex_normals(pos, quads)
 
     # per-vertex colour: nearest solid corner voxel; cavity AO from the solid corner count
     cpos = cmin[:, None, :] + corner_off[None, :, :].astype(np.float32)
@@ -280,14 +302,33 @@ def _surface_nets(material, color, pal, solid, smooth_passes, jitter, inset=0.02
         vrgb, vao.astype(np.float32)
 
 
-def surface_nets(part, palette, smooth_passes=2, keep_cubic_materials=(), jitter=0.04) -> Mesh:
-    """Smooth surface of a part (naive surface nets + clamped Laplacian), with the materials in
-    ``keep_cubic_materials`` (none by default) left out of the surface and appended as culled cubes."""
+def _signed_volume(pos, quads) -> float:
+    q = quads
+    tris = np.concatenate([q[:, [0, 1, 2]], q[:, [0, 2, 3]]])
+    p = pos.astype(np.float64)
+    return float((np.cross(p[tris[:, 0]], p[tris[:, 1]]) * p[tris[:, 2]]).sum() / 6.0)
+
+
+def _vertex_normals(pos, quads) -> np.ndarray:
+    """(N, 3) unit normals: area-weighted sum of the (outward, CCW) quad normals around each vertex."""
+    p = pos[quads]
+    n = np.cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 1])
+    vn = np.zeros_like(pos)
+    for i in range(4):
+        np.add.at(vn, quads[:, i], n)
+    return vn / np.maximum(np.linalg.norm(vn, axis=1, keepdims=True), 1e-12)
+
+
+def surface_nets(part, palette, smooth_passes=2, keep_cubic_materials=(), jitter=0.04, clamp="cell",
+                 inflate=0.0) -> Mesh:
+    """Smooth surface of a part (naive surface nets + Laplacian smoothing, see the module docstring
+    for ``clamp`` and ``inflate``, the latter in voxels), with the materials in ``keep_cubic_materials``
+    (none by default) left out of the surface and appended as culled cubes."""
     material, color = part.material, part.color
     pal = _palette_u8(palette)
     cubic = np.isin(material, list(keep_cubic_materials)) if keep_cubic_materials else np.zeros_like(material, bool)
     solid = (material != M.MAT_AIR) & ~cubic
-    res = _surface_nets(material, color, pal, solid, smooth_passes, jitter)
+    res = _surface_nets(material, color, pal, solid, smooth_passes, jitter, clamp=clamp, inflate=inflate)
     if res is None:
         out = _empty(part)
     else:

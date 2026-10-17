@@ -4,7 +4,7 @@ back edges, the jaw steps, the chin, the top and the back), with the painted fac
 eyes with lid and pupil, proud brows, the nose block with its top sloped, the mouth line with the
 tooth row behind it, ear notches) and the hair, the body is a block figure of normal proportions,
 both are mirror-symmetric and pass the checks clean, every hair / beard / hat / outfit option
-builds, and the coat_guy / barber specs build as one model with the expected parts."""
+builds, and the coat_guy spec (and the barber's former voxchar params) build as one model with the expected parts."""
 import importlib.util
 from pathlib import Path
 
@@ -298,8 +298,11 @@ def test_mustache_sits_under_the_nose_over_the_mouth_gap():
     assert report["errors"] == [] and report["warnings"] == []
 
 
-def test_barber_spec_builds():
-    mod, m = load_spec("barber")
+def test_voxchar_barber_builds():
+    # the barber spec itself now builds with voxgen.blockhead; these are its former voxchar params
+    params = VoxCharParams(name="barber", skin_tone="warm", hair_tone="chestnut", hair="chunky", beard="short",
+                           mustache=True, brows_thick=True, hat="beret", outfit="apron", sleeves="rolled")
+    m = build_character(params)
     assert m.name == "barber" and [p.name for p in m.parts] == ["body", "head", "hair", "beard", "hat", "feather"]
     report = checks.run(m)
     assert report["errors"] == [] and report["warnings"] == [], report
@@ -311,7 +314,7 @@ def test_barber_spec_builds():
     assert not overlap(feather, hat) and touching(feather, hat)
     assert feather.bbox()[1][1] + feather.origin[1] / feather.voxel_size > hat.bbox()[1][1] + hat.origin[1] / hat.voxel_size
     assert set(np.unique(m.part("head").material[exposed(m.part("head").solid())]).tolist()) <= OUTER
-    h = build_character(mod.PARAMS, head_only=True)      # the head frame, for coordinates
+    h = build_character(params, head_only=True)         # the head frame, for coordinates
     hat, hair = h.part("hat"), h.part("hair")
     assert at(hair, HW, 51, -1) == MAT_HAIR and at(hat, HW, 52, -6) == MAT_AIR
     # the beret: the band one cell outside the skull, the flare 1:1 to two cells, the top closing

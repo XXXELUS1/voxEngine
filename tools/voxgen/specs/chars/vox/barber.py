@@ -1,14 +1,17 @@
-"""The barber of the owner's concept sheet (voxgen.voxchar): a warm-skinned head of coarse cubes
-with 45-degree edges (render it with the ``facet`` style: every chamfer is a 1:1 staircase of five
-fine voxels), the flat painted face, the block nose with its top sloped, thick brows, a short
-chestnut beard following the jaw with the moustache, chunky hair with tufts peeking from under a
-red beret with a white feather; the body (apron, rolled sleeves, tools) is the next pass and here
-still comes from the generic ``apron`` outfit."""
-from voxgen.voxchar import VoxCharParams, build_character
+"""The barber of the owner's concept sheet, built block by block after
+``docs/reference/barber-head.md`` (``voxgen.blockhead``): a 10 x 13 x 9 U skull on the 20 mm unit
+grid written in 5 mm voxels, its skin edges cut 45 degrees in whole units (front and back
+vertical edges, the diagonal under the jaw, the forehead, the chin; render ``skull`` and ``nose``
+with ``facet``, the rest ``cubes``), the flat painted face (recessed framed eyes looking to the
+viewer's left, straight brows, the two-cube nose with its top sloped, the hidden mouth with its
+teeth), the two-brown beard and moustache as blocks, chunky hair clumps at the temples, the
+fringe and the nape, the red beret as slid ragged layers slouching to -X with the cream feather
+staircase at the top-left. Head only for now: the body comes in the next pass, after the owner
+approves the head."""
+from voxgen.blockhead import BlockHeadParams, build_head
 
-PARAMS = VoxCharParams(name="barber", skin_tone="warm", hair_tone="chestnut", hair="chunky", beard="short",
-                       mustache=True, brows_thick=True, hat="beret", outfit="apron", sleeves="rolled")
+PARAMS = BlockHeadParams(name="barber")
 
 
 def build():
-    return build_character(PARAMS)
+    return build_head(PARAMS)

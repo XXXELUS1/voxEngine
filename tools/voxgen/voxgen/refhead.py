@@ -23,13 +23,17 @@ Parts (``build_ref_head``):
   eyes      ``eyes="dots"``: dark 4 x 2 fine (2 x 1 coarse) voxels painted on the form (classic
             voxel-art eyes). ``eyes="balls"``: ``eye_l`` / ``eye_r`` 3 mm eyeball parts
             (:func:`multires_head.eyeball`: radius ``eye_radius`` 9.5 mm, iris, pupil, one
-            highlight) in carved sockets - the ball's front pole ``eye_protrude`` in front of the
-            form's surface at the eye, the opening 3 columns x 2 rows, the socket walls dark, a
-            one-row dark lid line above the opening, a stalk to the socket back.
+            highlight: on the 3 mm ball grid the iris is a 12 mm cross, the pupil 2 x 2) in carved
+            sockets - the ball's front pole ``eye_protrude`` in front of the form's surface at the
+            eye (0 = flush, so the lids wrap the ball without it poking through them), the
+            opening ``eye_open_cols`` x ``eye_open_rows`` (4 x 2 = 20 x 10 mm), the socket walls
+            dark, a one-row dark lid line above the opening, a stalk to the socket back.
   ``hair``  ``hair_voxel`` (5 mm default, 3 mm option), :func:`hairstyle.build_hair` on its own
             grid from the form resampled there; the form is carved one voxel deep under the hair
-            (``pocket``, the surface voxels 6-adjacent to hair) and the hair fills the pocket, so
-            the hair is embedded and 6-adjacent to the scalp. Tones: base, lit, deep.
+            (``pocket``: the scalp surface voxels above the hair floor that are 6-adjacent to
+            hair) and the hair fills the pocket, so the hair is embedded and 6-adjacent to the
+            scalp; a 3 mm pocket crumb that misses the hair by the grid offset goes back to the
+            form. Tones: base, lit, deep.
 
 Local frame as the other heads: metres, Y up, face toward -Z, chin at y = 0, centred on x / z;
 ``model.meta["mesh"]`` and ``model.meta["seams"]`` carry the cell / voxel / quad counts per part
@@ -52,7 +56,7 @@ from . import meshvox, mh
 from .body import dilate, exposed, shift
 from .checks import label_components
 from .facedetail import _cols, _rect, front_face, hole_walls, x_coords
-from .hairstyle import STYLES, HairParams, build_hair, ear_zone
+from .hairstyle import STYLES, HairParams, build_hair, ear_zone, hair_floor
 from .head_from_mesh import HeadParams, layer_tissues, upsample
 from .hybridhead import fine_landmarks
 from .model import Model, Part
@@ -101,8 +105,8 @@ class RefHeadParams:
     brow_tilt_cols: int = 2             # outer columns of the brow one row higher
     # -- eyeballs
     eye_radius: float = 0.0095
-    iris_radius: float = 0.0045
-    pupil_radius: float = 0.0018
+    iris_radius: float = 0.005          # on the 3 mm ball grid: a 12 mm cross (4 x 4 minus corners)
+    pupil_radius: float = 0.0022        # 2 x 2 voxels
     eye_voxel: float = 0.003
     eye_protrude: float = 0.0           # the ball's front pole this far in front of the form's surface (0 = flush)
     eye_open_cols: int = 4              # opening width in form columns
@@ -290,13 +294,25 @@ def build_ref_head(params: RefHeadParams | None = None, name: str | None = None,
     pocket = np.zeros(form.shape, bool)
     if p.pocket:
         Xf, Yf, Zf = fgrid.centres()
-        under = form & dilate(hair_fp) & ~ear_zone(Xf, Yf, Zf, lm)     # surface voxels 6-adjacent to hair
+        floor_f = hair_floor(Xf, Zf, lm, hres.params)
+        # scalp surface voxels 6-adjacent to hair (never the forehead under the ledge, never the ears)
+        under = form & dilate(hair_fp) & (Yf >= floor_f) & ~ear_zone(Xf, Yf, Zf, lm)
         pocket = under | under[:, :, ::-1]
         form = form & ~pocket
         if hgrid is fgrid:
             hair_h = hair_h | pocket
         else:
             hair_h = hair_h | (resample(pocket, fgrid, hgrid) & ~resample(form, fgrid, hgrid))
+        # a 3 mm pocket voxel can miss the hair by a grid offset: drop such crumbs from the hair
+        # and give their footprint back to the form, so the surface stays closed
+        labels, n = label_components(hair_h)
+        if n > 1:
+            crumbs = labels > 1
+            hair_h = labels == 1
+            back = pocket & footprint(crumbs, hgrid, fgrid) & ~footprint(hair_h, hgrid, fgrid)
+            form |= back
+            pocket &= ~back
+            stats["hair_crumbs"] = {"removed": int(crumbs.sum()), "form_restored": int(back.sum())}
         hair_fp = hair_fp | pocket
     stats["hair"] = dict(hres.stats, pocket=int(pocket.sum()))
 
@@ -320,9 +336,10 @@ def build_ref_head(params: RefHeadParams | None = None, name: str | None = None,
     if p.eyes == "balls":
         # one-row dark lid line on the front face right above each opening
         X = x_coords(form.shape[2])
-        xc = math.floor(float(lm["eye_x"]) / vs) + 0.5           # the opening's centre column
         ey = int(flm.eye_y)
-        lid = front_face(form) & skin_mask & _rect(form.shape, _cols(X, xc - 1, xc + 1), ey + 1, ey + 1)
+        half = (p.eye_open_cols - 1) / 2                             # the opening's columns (see carve_sockets)
+        xc = round(float(lm["eye_x"]) / vs) if p.eye_open_cols % 2 == 0 else math.floor(float(lm["eye_x"]) / vs) + 0.5
+        lid = front_face(form) & skin_mask & _rect(form.shape, _cols(X, xc - half, xc + half), ey + 1, ey + 1)
         col[lid] = C("line")
         stats["face"]["lid"] = int(lid.sum())
 

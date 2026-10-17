@@ -9,12 +9,14 @@ or 3 mm), from the form of the head and the mesh landmarks, so the same style bu
 sizes and stays comparable.
 
 Styles (``STYLES``):
-  ``quiff``  the reference: a base mass thick on top and short on the sides, with 4-6 clumps
-             along the front ridge as stepped spikes 2-4 cm tall, tapering (square pyramids, the
-             tip at least one voxel) and leaning back (``Clump.lean`` metres back per metre up),
-             one shorter clump behind them.
+  ``quiff``  the reference: a short base (12 mm) with a pompadour block across the front (13 cm
+             wide at the base, 8 cm at its top, 2 cm tall, swept back: ``Clump.lean`` metres
+             back per metre up) and five stepped peaks (2.5-3.5 cm over the block, tapering to a
+             one-voxel-coarse tip, leaning back; the outer pair steps down onto the base), so
+             the silhouette is one tall jagged mass over the forehead that narrows upward.
   ``short``  a cap 15 mm thick with the hairline ledge and one-voxel ridge rows along the comb
-             direction (front to back) every ``ridge_period`` columns over the top.
+             direction (front to back) every ``ridge_period`` columns over the top, starting
+             ``ridge_from_front`` behind the front face so the ledge stays a clean line.
   ``slick``  swept back: lower volume on top, the back a little longer, long ridges that run
              over the top and continue down the back face as vertical lines.
   ``messy``  irregular small clumps (1-2 voxels tall at 5 mm: "2-step bumps") scattered over the
@@ -33,8 +35,9 @@ Common build (:func:`build_hair`):
   3. clumps (:func:`add_clumps`) stand on the base top (each column filled down to the base so
      a leaning spike never floats) and ridges (:func:`add_ridges`) are one voxel on the exposed
      top (and, for ``slick``, back) faces of pattern columns;
-  4. tones (:func:`tone_masks`): ``lit`` = hair with air above within ``lit_band`` of the crown
-     (upward faces catch the light; the lower terraces stay base, so no contour map), ``deep`` =
+  4. tones (:func:`tone_masks`): ``lit`` = upward faces of the clumps and of the base's crown
+     terrace within ``lit_band`` of the crown (the lower terraces and the ridges stay base, so
+     no contour map and no speckle), ``deep`` =
      hair with air below (undersides, the hairline ledge) and the band ``deep_band`` above the
      floor behind the ears (the nape).
 The hair touches the scalp by construction (offset (0, 1, 0) is always in the sweep) and is
@@ -62,30 +65,36 @@ STYLES = ("quiff", "short", "slick", "messy")
 
 @dataclass
 class Clump:
-    """One stepped spike (metres): base centre ``x`` (>= 0, mirrored when > 0), base centre ``z``
-    behind the hair's front face at that x, ``height``, base ``width`` (x) and ``depth`` (z),
-    ``lean`` = metres backward per metre of rise (negative: forward)."""
+    """One block or stepped spike (metres): base centre ``x`` (>= 0, mirrored when > 0), base
+    centre ``z`` behind the hair's front face at that x, ``height``, base ``width`` (x) and
+    ``depth`` (z), ``lean`` = metres backward per metre of rise (negative: forward), and the
+    size at the top (``top_width`` / ``top_depth``; the taper is linear, a side never thinner
+    than one voxel)."""
     x: float
     z: float
     height: float
     width: float = 0.02
     depth: float = 0.025
     lean: float = 0.6
+    top_width: float = 0.01
+    top_depth: float = 0.01
 
 
+#: the reference quiff: one swept-back pompadour block across the front, five peaks on it
 QUIFF_CLUMPS = [
-    Clump(0.000, 0.020, 0.040, 0.030, 0.040, 0.7),
-    Clump(0.025, 0.020, 0.035, 0.030, 0.040, 0.7),
-    Clump(0.050, 0.022, 0.025, 0.025, 0.035, 0.6),
-    Clump(0.000, 0.062, 0.018, 0.035, 0.030, 0.4),
+    Clump(0.000, 0.028, 0.022, 0.130, 0.056, 0.5, 0.080, 0.030),
+    Clump(0.000, 0.022, 0.036, 0.036, 0.044, 0.8, 0.012, 0.012),
+    Clump(0.025, 0.022, 0.032, 0.032, 0.042, 0.8, 0.010, 0.012),
+    Clump(0.050, 0.026, 0.024, 0.026, 0.036, 0.7, 0.010, 0.010),
 ]
 MESSY_CLUMPS = [
-    Clump(0.010, 0.012, 0.015, 0.015, 0.015, 0.2),
-    Clump(0.035, 0.020, 0.012, 0.012, 0.012, -0.3),
-    Clump(0.020, 0.045, 0.018, 0.015, 0.015, 0.4),
-    Clump(0.045, 0.050, 0.010, 0.012, 0.012, 0.0),
-    Clump(0.000, 0.075, 0.012, 0.020, 0.015, 0.5),
-    Clump(0.030, 0.085, 0.010, 0.012, 0.012, -0.2),
+    Clump(0.010, 0.015, 0.018, 0.020, 0.020, 0.3, 0.010, 0.010),
+    Clump(0.040, 0.025, 0.014, 0.018, 0.018, -0.3, 0.010, 0.010),
+    Clump(0.025, 0.055, 0.018, 0.020, 0.020, 0.5, 0.010, 0.010),
+    Clump(0.055, 0.060, 0.012, 0.015, 0.015, 0.0, 0.010, 0.010),
+    Clump(0.000, 0.090, 0.015, 0.025, 0.020, 0.4, 0.010, 0.010),
+    Clump(0.035, 0.105, 0.012, 0.018, 0.018, -0.4, 0.010, 0.010),
+    Clump(0.010, 0.135, 0.012, 0.020, 0.020, 0.6, 0.010, 0.010),
 ]
 
 
@@ -99,7 +108,7 @@ class HairParams:
     temple_drop: float = 0.015
     ear_clearance: float = 0.006      # the hair over the ear stops this far above the ear top
     side_in: float = 0.006            # the skull "sides" start this far inside ear_inner_x
-    sideburn_depth: float = 0.015     # the sideburn strip reaches this far in front of the ear
+    sideburn_depth: float = 0.020     # the sideburn strip reaches this far in front of the ear
     nape_drop: float = 0.0            # the nape edge is this far below the ear's bottom
     top: float = 0.020                # base mass thickness upward
     side: float = 0.008               # sideways
@@ -111,6 +120,7 @@ class HairParams:
     ridge_period: int = 3             # one ridge column every this many columns
     ridge_phase: int = 2              # (column index of |x| + phase) % period == 0 -> ridge
     ridge_above: float = 0.025        # ridges only this far above the hair floor
+    ridge_from_front: float = 0.015   # ridges start this far behind the hair's front face (the ledge stays clean)
     lit_band: float = 0.035           # upward faces within this of the crown are lit
     deep_band: float = 0.012          # the band above the floor behind the ears is deep
     smooth_passes: int = 2
@@ -120,11 +130,12 @@ class HairParams:
         if style not in STYLES:
             raise ValueError(f"unknown hair style {style!r}, expected one of {STYLES}")
         base = {
-            "quiff": dict(top=0.020, side=0.008, back=0.015, clumps=list(QUIFF_CLUMPS), lit_band=0.035),
-            "short": dict(top=0.015, side=0.010, back=0.015, ridges="top", lit_band=0.025),
-            "slick": dict(top=0.012, side=0.008, back=0.020, ridges="top_back", nape_drop=0.010, lit_band=0.020,
-                          ridge_above=0.0),
-            "messy": dict(top=0.018, side=0.010, back=0.015, clumps=list(MESSY_CLUMPS), lit_band=0.030),
+            "quiff": dict(top=0.012, side=0.008, back=0.012, clumps=list(QUIFF_CLUMPS), lit_band=0.022),
+            "short": dict(top=0.015, side=0.010, back=0.015, ridges="top", lit_band=0.012, shape_power=3.0),
+            "slick": dict(top=0.012, side=0.008, back=0.020, ridges="top_back", nape_drop=0.010, lit_band=0.012,
+                          ridge_above=0.0, shape_power=3.0),
+            "messy": dict(top=0.018, side=0.010, back=0.015, clumps=list(MESSY_CLUMPS), lit_band=0.030,
+                          shape_power=3.0),
         }[style]
         base.update(overrides)
         return cls(style=style, **base)
@@ -138,6 +149,7 @@ class HairResult:
     scalp: np.ndarray     # form voxels under the hair (above the floor, ears excluded)
     floor: np.ndarray     # (nz, ny, nx) metres: the hair floor height broadcast over the grid
     stats: dict
+    params: HairParams | None = None
 
 
 # ---------------------------------------------------------------------------- floor and scalp
@@ -217,7 +229,7 @@ def add_clumps(hair: np.ndarray, form: np.ndarray, grid: meshvox.VoxelGrid, clum
     zs = (grid.origin[2] + (np.arange(nz) + 0.5) * vs)
     base_top = column_tops(hair)                                   # (nz, nx)
     has_col = base_top >= 0
-    # the base's front z per x column (metres), over the whole hair mass
+    # the base's front z per x column (metres), over the whole hair mass (before any clump)
     front_idx = np.where(has_col.any(axis=0), np.argmax(has_col, axis=0), -1)   # (nx,)
     placed = 0
     rows = np.arange(ny)[None, :, None]
@@ -241,8 +253,8 @@ def add_clumps(hair: np.ndarray, form: np.ndarray, grid: meshvox.VoxelGrid, clum
                 if row >= ny:
                     break
                 t = k / H
-                wx = max(vs * 0.5, c.width / 2 * (1.0 - t))
-                wz = max(vs * 0.5, c.depth / 2 * (1.0 - t))
+                wx = max(vs * 0.5, (c.width + (c.top_width - c.width) * t) / 2)
+                wz = max(vs * 0.5, (c.depth + (c.top_depth - c.depth) * t) / 2)
                 czk = cz0 + c.lean * k * vs
                 foot = (np.abs(xs[None, :] - cx) <= wx + 1e-9) & (np.abs(zs[:, None] - czk) <= wz + 1e-9)
                 clump[:, row, :] |= foot
@@ -250,6 +262,8 @@ def add_clumps(hair: np.ndarray, form: np.ndarray, grid: meshvox.VoxelGrid, clum
             above_or_at = np.maximum.accumulate(clump[:, ::-1, :], axis=1)[:, ::-1, :]
             fill = above_or_at & (rows > base_top[:, None, :]) & has_col[:, None, :]
             out |= (clump | fill) & ~form
+            base_top = column_tops(out)
+            has_col = base_top >= 0
             placed += 1
     return out, placed
 
@@ -265,7 +279,11 @@ def add_ridges(hair: np.ndarray, form: np.ndarray, grid: meshvox.VoxelGrid, floo
     col = (np.floor(np.abs(X[0, 0, :]) / vs).astype(int) + p.ridge_phase) % p.ridge_period == 0   # (nx,)
     cols = np.broadcast_to(col[None, None, :], hair.shape)
     filled = hair | form
-    top_faces = hair & ~shift(filled, 0, -1, 0) & (Y >= floor + p.ridge_above)
+    has_col = hair.any(axis=1)                                                    # (nz, nx)
+    front_idx = np.where(has_col.any(axis=0), np.argmax(has_col, axis=0), 0)      # (nx,)
+    z_front = Z[front_idx, 0, np.arange(hair.shape[2])]                           # (nx,) metres
+    behind_front = Z >= z_front[None, None, :] + p.ridge_from_front
+    top_faces = hair & ~shift(filled, 0, -1, 0) & (Y >= floor + p.ridge_above) & behind_front
     ridge = shift(top_faces, 0, 1, 0) & ~filled & cols
     if p.ridges == "top_back":
         back_faces = hair & ~shift(filled, 0, 0, -1) & (Z > lm["ear_z"][1]) & (Y >= floor + vs)
@@ -309,9 +327,9 @@ def build_hair(form: np.ndarray, grid: meshvox.VoxelGrid, lm: dict, style: str |
     base = int(hair.sum())
     hair, n_clumps = add_clumps(hair, form, grid, p.clumps)
     hair |= hair[:, :, ::-1]
+    added = hair & ~base_mask                                      # clumps only: ridges stay base-toned
     hair, n_ridge = add_ridges(hair, form, grid, floor, lm, p)
     hair |= hair[:, :, ::-1]
-    added = hair & ~base_mask
     labels, n = label_components(hair)
     crumbs = 0
     if n > 1:
@@ -320,4 +338,4 @@ def build_hair(form: np.ndarray, grid: meshvox.VoxelGrid, lm: dict, style: str |
     lit, deep = tone_masks(hair, added & hair, form, Y, Z, floor, lm, p)
     stats = {"style": p.style, "voxel_mm": round(vs * 1000, 2), "base": base, "clumps": n_clumps, "ridge": n_ridge,
              "crumbs_removed": crumbs, "solid": int(hair.sum()), "lit": int(lit.sum()), "deep": int(deep.sum())}
-    return HairResult(hair, lit, deep, scalp, floor, stats)
+    return HairResult(hair, lit, deep, scalp, floor, stats, p)

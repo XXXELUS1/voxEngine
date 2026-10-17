@@ -35,7 +35,10 @@ added voxels are skin and the holes get a skin lining by depth.
 ``HeadParams.mid(strength)`` is the "middle" caricature the owner asked for between the realistic
 mesh (features by colour only) and the old SDF head (features as lumps): the stylized 3 mm head
 with relief and ``MID_MORPHS`` (brow ridge, bigger nose, fuller lips, stronger jaw and cheekbones,
-bigger ears, hooded lids) scaled by ``strength``.
+bigger ears, hooded lids) scaled by ``strength``. ``HeadParams.mid_v2()`` is that head after the
+owner's review: a normal chin (``CHIN_FIX`` via ``set_morphs``), the brows' inner ends ``brow_gap``
+apart, no hair over the ear box up to ``ear_clearance`` above the ear top (the ears show).
+The tissue layering is :func:`layer_tissues`, shared with the 5 mm form of :mod:`voxgen.multires_head`.
 
 Local space of the part: metres, Y up, face toward -Z, chin at y ~ 0, centred on x/z.
 The hair helper of MakeHuman is a hull around the whole head and face, so the hairline
@@ -87,6 +90,7 @@ class HeadParams:
     sideburn_below_ear_top: float = 0.02 # sideburns end this far below the ear top (mid-ear)
     nape_up: float = 0.0                 # nape hairline relative to the mouth level
     ear_trim: float = 0.006              # hair above the ear is trimmed to this far out of the ear root
+    ear_clearance: float = 0.004         # no hair over the ear box up to this far above the ear top (0.012 = ears show)
     fringe: bool = False
     fringe_length: int = 3               # voxels
     eyebrows: bool = True
@@ -103,6 +107,7 @@ class HeadParams:
     clean_surface: bool = False          # 3x3x3 closing then opening of the form (thin sheets kept) before layering
     flat_tints: bool = False             # disciplined palette, no per-voxel colour noise, hair shaded in bands
     brow_rows: int = 0                   # rows of brow voxels (0 = as many as 5 mm holds)
+    brow_gap: float = 0.0                # minimum distance between the brows' inner ends (0 = the mesh decides)
     lip_half_height: float = 0.006       # half-height of the lip band
     lid_line: bool = False               # one dark voxel row along the upper lid
     iris_voxels: int = 0                 # 0 = disc of iris_radius; n = n x n block with one highlight voxel
@@ -119,17 +124,36 @@ class HeadParams:
         return cls(**base)
 
     @classmethod
-    def mid(cls, strength: float = 1.0, **overrides) -> "HeadParams":
+    def mid(cls, strength: float = 1.0, set_morphs: dict | None = None, **overrides) -> "HeadParams":
         """The stylized 3 mm head with relief and the ``MID_MORPHS`` caricature scaled by
         ``strength`` (soft ~0.65, medium ~1.2, strong ~1.9); stubble off. ``morphs`` in
-        ``overrides`` are added on top (``{"nose-scale-vert": 0.3}``), other fields override."""
+        ``overrides`` are added on top (``{"nose-scale-vert": 0.3}``), ``set_morphs`` replace
+        the scaled weight outright (``{"chin-prominent": 0.2}``; 0 drops the modifier), other
+        fields override."""
         morphs = {k: round(w * strength, 3) for k, w in MID_MORPHS.items()}
         for k, w in overrides.pop("morphs", {}).items():
             morphs[k] = round(morphs.get(k, 0.0) + float(w), 3)
+        for k, w in (set_morphs or {}).items():
+            morphs[k] = round(float(w), 3)
+        morphs = {k: w for k, w in morphs.items() if w != 0.0}
         base = dict(relief=True, stubble=False, morphs=morphs,
                     lip_half_height=0.0035 if strength < 1.5 else 0.0068)   # 3 lip rows, 5 when strong
         base.update(overrides)
         return cls.stylized(**base)
+
+    @classmethod
+    def mid_v2(cls, strength: float = 1.2, **overrides) -> "HeadParams":
+        """``mid`` after the owner's review of the mid renders: the chin reduced (``CHIN_FIX``
+        replaces the scaled chin weights), the brows separated (inner ends >= 15 mm = 5 voxels
+        apart at 3 mm) and the hair trimmed 12 mm above the ears so the ears show."""
+        base = dict(set_morphs=dict(CHIN_FIX), brow_gap=0.015, ear_clearance=0.012)
+        base.update(overrides)
+        return cls.mid(strength, **base)
+
+
+# the owner's chin correction of the mid caricature: a normal chin (absolute modifier weights
+# that replace the scaled MID_MORPHS values; chin-jaw-drop is dropped)
+CHIN_FIX = {"chin-prominent": 0.2, "chin-width": 0.3, "chin-jaw-drop": 0.0}
 
 
 # the "middle" caricature at strength 1: MakeHuman modifier weights (voxgen.mh_targets), l-/r- pairs
@@ -339,6 +363,18 @@ def air_distance(solid: np.ndarray, radius: float) -> np.ndarray:
     return dist
 
 
+def hair_ear_zone(X: np.ndarray, Y: np.ndarray, Z: np.ndarray, lm: dict, p: HeadParams) -> np.ndarray:
+    """Where the hair cap never goes: the ear box up to ``ear_clearance`` above the ear top, and
+    outward of ``ear_inner_x + ear_trim`` up to 14 mm above it (the cap hugs the skull there
+    instead of hanging over the ear)."""
+    ear_z0, ear_z1 = lm["ear_z"]
+    ear_y1 = lm["ear_y"][1]
+    zone = (np.abs(X) > lm["ear_inner_x"] - 0.004) & (Y < ear_y1 + p.ear_clearance) & (Z > ear_z0 - 0.008) & (Z < ear_z1 + 0.008)
+    zone |= (np.abs(X) > lm["ear_inner_x"] + p.ear_trim) & (Y < ear_y1 + max(0.014, p.ear_clearance)) \
+        & (Z > ear_z0 - 0.012) & (Z < ear_z1 + 0.012)
+    return zone
+
+
 def hair_cap(grid: meshvox.VoxelGrid, solid: np.ndarray, lm: dict, p: HeadParams) -> np.ndarray:
     """Solid hair cap: the air within ``hair_thickness`` (Euclidean, so the outer surface
     is smooth, not a Manhattan checkerboard) of the skin, cut at the smooth
@@ -346,11 +382,8 @@ def hair_cap(grid: meshvox.VoxelGrid, solid: np.ndarray, lm: dict, p: HeadParams
     that edge, trimmed around the ears; closed (dilate + erode) and de-spiked."""
     X, Y, Z = grid.centres()
     floor = hair_floor(X, Z, lm, p)
-    ear_z0, ear_z1 = lm["ear_z"]
-    ear_y1 = lm["ear_y"][1]
-    ear_zone = (np.abs(X) > lm["ear_inner_x"] - 0.004) & (Y < ear_y1 + 0.004) & (Z > ear_z0 - 0.008) & (Z < ear_z1 + 0.008)
-    # above the ear the cap hugs the skull instead of hanging over the ear
-    ear_zone |= (np.abs(X) > lm["ear_inner_x"] + p.ear_trim) & (Y < ear_y1 + 0.014) & (Z > ear_z0 - 0.012) & (Z < ear_z1 + 0.012)
+    ear_zone = hair_ear_zone(X, Y, Z, lm, p)
+    ear_z1 = lm["ear_z"][1]
     k = p.hair_thickness / grid.voxel_size
     t_back = smoothstep(ear_z1, ear_z1 + 0.035, Z)
     taper = p.hair_taper * (1.0 - t_back) + p.nape_taper * t_back
@@ -585,6 +618,72 @@ def relief_pass(solid: np.ndarray, eye: np.ndarray, lid_line: np.ndarray, X, Y, 
     return solid, masks
 
 
+def layer_tissues(solid: np.ndarray, grid: meshvox.VoxelGrid, lm: dict, p: HeadParams, human: mh.MakeHuman,
+                  C, cut_y: float) -> tuple[np.ndarray, np.ndarray]:
+    """Material and colour fields of a head solid by BFS depth from the air: skin (``skin_mm``),
+    fat (``fat_mm``, thicker on the cheeks), muscle, bone where the depth exceeds
+    ``bone_depth_above_brow_mm`` above the brow line and ``bone_depth_below_brow_mm`` below it
+    (neck: only the back half = spine); ear and nose cores cartilage; temple vein and carotid
+    replacing fat/muscle; teeth from the tooth-row helpers, never replacing skin. ``C`` maps a
+    colour name to a palette index. Works on any voxel size (the mm thresholds are rounded to
+    voxels), so the 5 mm form of the multi-resolution head uses it too."""
+    X, Y, Z = grid.centres()
+    vs_mm = grid.voxel_size * 1000.0
+    depth = depth_map(solid)
+    depth_mm = (depth.astype(np.float32) - 0.5) * vs_mm
+    skin_vox = max(1, int(math.ceil(p.skin_mm / vs_mm - 1e-6)))
+    fat_vox = max(1, int(round(p.fat_mm / vs_mm)))
+    extra_vox = int(round(p.cheek_fat_extra_mm / vs_mm))
+    mat = np.zeros(grid.shape, np.uint8)
+    col = np.zeros(grid.shape, np.uint8)
+    mat[solid] = M.MAT_MUSCLE
+    col[solid] = C("muscle")
+    cheek = (((np.abs(X) - (lm["eye_x"] + 0.012)) / 0.028) ** 2 + ((Y - (lm["eye_y"] - 0.04)) / 0.03) ** 2
+             + ((Z - (lm["nose_tip"][2] + 0.06)) / 0.045) ** 2) <= 1.0
+    fat_limit = skin_vox + fat_vox + np.where(cheek, extra_vox, 0)
+    fat = solid & (depth > skin_vox) & (depth <= fat_limit)
+    mat[fat] = M.MAT_FAT
+    col[fat] = C("fat")
+    skin = solid & (depth <= skin_vox)
+    mat[skin] = M.MAT_SKIN
+    col[skin] = C("skin")
+    # bone: skull close under the forehead, deeper under the face; spine in the back of the neck
+    ramp = np.clip((Y - (lm["brow_y"] - 0.02)) / 0.02, 0.0, 1.0)
+    thr = p.bone_depth_below_brow_mm + (p.bone_depth_above_brow_mm - p.bone_depth_below_brow_mm) * ramp
+    bone = solid & (depth_mm >= thr) & (depth > skin_vox + 1)
+    neck = Y < lm["chin"][1] - 0.005
+    bone &= ~(neck & (Z < lm["neck_base"][2]))
+    mat[bone] = M.MAT_BONE
+    col[bone] = C("bone")
+    if p.cartilage:
+        ear_z0, ear_z1 = lm["ear_z"]
+        ear = (np.abs(X) > lm["ear_inner_x"]) & (Y > lm["ear_y"][0]) & (Y < lm["ear_y"][1]) & (Z > ear_z0) & (Z < ear_z1)
+        nose = (np.abs(X) < 0.018) & (Y > lm["nose_base_y"] - 0.004) & (Y < lm["eye_y"] - 0.004) & (Z < lm["nose_tip"][2] + 0.03)
+        cart = solid & (depth > skin_vox) & ~bone & (ear | nose)
+        mat[cart] = M.MAT_CARTILAGE
+        col[cart] = C("cartilage")
+
+    # ---- vessels: temple vein and carotid, only replacing fat/muscle (they stay under the skin)
+    if p.vessels:
+        ex, ey, ez = lm["eye_x"], lm["eye_y"], lm["eye_z"]
+        temple = capsule_mask(X, Y, Z, (ex + 0.036, ey - 0.005, ez + 0.02), (ex + 0.03, ey + 0.05, ez + 0.03), 0.0045)
+        carotid = capsule_mask(X, Y, Z, (0.026, cut_y - 0.01, lm["neck_base"][2] - 0.03), (0.03, lm["chin"][1] - 0.004, lm["chin"][2] + 0.035), 0.005)
+        vessel = (temple | carotid) & np.isin(mat, (M.MAT_FAT, M.MAT_MUSCLE))
+        mat[vessel] = M.MAT_VESSEL
+        col[vessel] = C("vessel")
+
+    # ---- teeth: inside the jaw, never replacing skin (a closed mouth hides them fully)
+    teeth = np.zeros(grid.shape, bool)
+    for h in ("upper_teeth", "lower_teeth"):
+        t, _ = meshvox.voxelize_solid(meshvox.close_holes(human.helper(h)), grid)
+        teeth |= t
+    teeth &= solid & (mat != M.MAT_SKIN)
+    mat[teeth] = M.MAT_TOOTH
+    tz, ty, tx = np.nonzero(teeth)
+    col[tz, ty, tx] = np.where(tx % 2 == 0, C("tooth"), C("tooth_dark")).astype(np.uint8)
+    return mat, col
+
+
 # ---------------------------------------------------------------------------
 # the builder
 # ---------------------------------------------------------------------------
@@ -650,58 +749,7 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
         model.meta["relief"] = {k: int(v.sum()) for k, v in relief_masks.items()}
 
     # ---- tissues by depth
-    depth = depth_map(solid)
-    depth_mm = (depth.astype(np.float32) - 0.5) * vs_mm
-    skin_vox = max(1, int(math.ceil(p.skin_mm / vs_mm - 1e-6)))
-    fat_vox = max(1, int(round(p.fat_mm / vs_mm)))
-    extra_vox = int(round(p.cheek_fat_extra_mm / vs_mm))
-    mat = np.zeros(grid.shape, np.uint8)
-    col = np.zeros(grid.shape, np.uint8)
-    mat[solid] = M.MAT_MUSCLE
-    col[solid] = C("muscle")
-    cheek = (((np.abs(X) - (lm["eye_x"] + 0.012)) / 0.028) ** 2 + ((Y - (lm["eye_y"] - 0.04)) / 0.03) ** 2
-             + ((Z - (lm["nose_tip"][2] + 0.06)) / 0.045) ** 2) <= 1.0
-    fat_limit = skin_vox + fat_vox + np.where(cheek, extra_vox, 0)
-    fat = solid & (depth > skin_vox) & (depth <= fat_limit)
-    mat[fat] = M.MAT_FAT
-    col[fat] = C("fat")
-    skin = solid & (depth <= skin_vox)
-    mat[skin] = M.MAT_SKIN
-    col[skin] = C("skin")
-    # bone: skull close under the forehead, deeper under the face; spine in the back of the neck
-    ramp = np.clip((Y - (lm["brow_y"] - 0.02)) / 0.02, 0.0, 1.0)
-    thr = p.bone_depth_below_brow_mm + (p.bone_depth_above_brow_mm - p.bone_depth_below_brow_mm) * ramp
-    bone = solid & (depth_mm >= thr) & (depth > skin_vox + 1)
-    neck = Y < lm["chin"][1] - 0.005
-    bone &= ~(neck & (Z < lm["neck_base"][2]))
-    mat[bone] = M.MAT_BONE
-    col[bone] = C("bone")
-    if p.cartilage:
-        ear_z0, ear_z1 = lm["ear_z"]
-        ear = (np.abs(X) > lm["ear_inner_x"]) & (Y > lm["ear_y"][0]) & (Y < lm["ear_y"][1]) & (Z > ear_z0) & (Z < ear_z1)
-        nose = (np.abs(X) < 0.018) & (Y > lm["nose_base_y"] - 0.004) & (Y < lm["eye_y"] - 0.004) & (Z < lm["nose_tip"][2] + 0.03)
-        cart = solid & (depth > skin_vox) & ~bone & (ear | nose)
-        mat[cart] = M.MAT_CARTILAGE
-        col[cart] = C("cartilage")
-
-    # ---- vessels: temple vein and carotid, only replacing fat/muscle (they stay under the skin)
-    if p.vessels:
-        ex, ey, ez = lm["eye_x"], lm["eye_y"], lm["eye_z"]
-        temple = capsule_mask(X, Y, Z, (ex + 0.036, ey - 0.005, ez + 0.02), (ex + 0.03, ey + 0.05, ez + 0.03), 0.0045)
-        carotid = capsule_mask(X, Y, Z, (0.026, cut_y - 0.01, lm["neck_base"][2] - 0.03), (0.03, lm["chin"][1] - 0.004, lm["chin"][2] + 0.035), 0.005)
-        vessel = (temple | carotid) & np.isin(mat, (M.MAT_FAT, M.MAT_MUSCLE))
-        mat[vessel] = M.MAT_VESSEL
-        col[vessel] = C("vessel")
-
-    # ---- teeth: inside the jaw, never replacing skin (a closed mouth hides them fully)
-    teeth = np.zeros(grid.shape, bool)
-    for h in ("upper_teeth", "lower_teeth"):
-        t, _ = meshvox.voxelize_solid(meshvox.close_holes(human.helper(h)), grid)
-        teeth |= t
-    teeth &= solid & (mat != M.MAT_SKIN)
-    mat[teeth] = M.MAT_TOOTH
-    tz, ty, tx = np.nonzero(teeth)
-    col[tz, ty, tx] = np.where(tx % 2 == 0, C("tooth"), C("tooth_dark")).astype(np.uint8)
+    mat, col = layer_tissues(solid, grid, lm, p, human, C, cut_y)
 
     # ---- eyes
     mat[eye] = M.MAT_EYE
@@ -729,7 +777,7 @@ def build_head(voxel_size: float = 0.005, params: HeadParams | None = None, name
     mouth_y = float(lm["mouth"][1])
     if p.eyebrows:
         band = skin_ex & (Y >= lm["eye_y"] + 0.012 - vs * 0.5) & (Y <= lm["eye_y"] + 0.018 + vs * 0.5) \
-            & (np.abs(X) >= lm["eye_x"] - 0.017) & (np.abs(X) <= lm["eye_x"] + 0.021)
+            & (np.abs(X) >= max(lm["eye_x"] - 0.017, p.brow_gap * 0.5)) & (np.abs(X) <= lm["eye_x"] + 0.021)
         if band.any():
             band &= Z <= Z[band].min() + 0.02
             rows = p.brow_rows or max(1, int(round(0.005 / vs)))

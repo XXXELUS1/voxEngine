@@ -7,9 +7,10 @@ from voxgen import checks, meshvox, mh
 from voxgen.body import dilate, exposed
 from voxgen import mh_targets
 from voxgen.body import exposed as exposed_mask
-from voxgen.head_from_mesh import MID_MORPHS, HeadParams, build_head, make_palette
+from voxgen.head_from_mesh import CHIN_FIX, MID_MORPHS, HeadParams, build_head, make_palette
 from voxgen.hybridhead import DEFAULT_MORPHS, HybridHeadParams, build_hybrid_head, quantize_form
 from voxgen.materials import MAT_AIR, MAT_BONE, MAT_EYE, MAT_HAIR, MAT_SKIN, MAT_TOOTH
+from voxgen.multires_head import MultiresParams, build_multires_head, contains, footprint, resample, seam_stats
 from voxgen.objmesh import ObjMesh
 
 
@@ -190,3 +191,128 @@ def test_hybrid_knobs():
     assert m.palette.index("stubble") in set(np.unique(part.color).tolist())
     with pytest.raises(ValueError):
         build_hybrid_head(HybridHeadParams(), fine_voxel=0.003)
+
+
+# ---------------------------------------------------------------------------- mid v2 (chin fix) and the multi-resolution head
+
+def test_mid_v2_params_and_targets():
+    p = HeadParams.mid_v2(1.2)
+    for k, w in CHIN_FIX.items():
+        assert p.morphs.get(k, 0.0) == pytest.approx(w)                   # absolute, not scaled
+    assert "chin-jaw-drop" not in p.morphs                                # zero weights are dropped
+    assert p.morphs["nose-scale-vert"] == pytest.approx(MID_MORPHS["nose-scale-vert"] * 1.2, abs=1e-3)
+    assert p.brow_gap == 0.015 and p.ear_clearance == 0.012 and p.relief
+    q = HeadParams.mid(1.2, set_morphs={"chin-width": 0.5}, morphs={"chin-width": 0.1})
+    assert q.morphs["chin-width"] == pytest.approx(0.5)                   # set_morphs win over additive morphs
+    for rel, _w in mh_targets.files_for(p.morphs):
+        assert mh_targets.target_path(rel, download=False).is_file(), rel
+
+
+@pytest.fixture(scope="module")
+def mid_v2():
+    return build_head(0.003, HeadParams.mid_v2(1.2), name="t_mid_v2")
+
+
+def test_mid_v2_brows_apart_and_ears_clear(mid_v2):
+    part = mid_v2.part("head")
+    X, Y, Z = part.coords()
+    human = mh.load(morphs=HeadParams.mid_v2(1.2).morphs)
+    lm = human.landmarks()
+    dy = part.origin[1] - lm["neck_base"][1]                             # MakeHuman y -> local y
+    v = human.body().vertices
+    hv = v[v[:, 1] > lm["neck_base"][1] - 0.01]
+    dz = -(hv[:, 2].min() + hv[:, 2].max()) / 2                          # MakeHuman z -> local z (grid centred)
+    eye_y = lm["eye_y"] + dy
+    hair = part.material == MAT_HAIR
+    brow = hair & (Y > eye_y + 0.008) & (Y < eye_y + 0.024) & (Z < 0) & (np.abs(X) < 0.05)
+    assert brow.sum() >= 20
+    assert np.abs(X[brow]).min() >= 0.015 / 2 - 1e-6                      # inner ends >= 5 voxels apart
+    ear_y1 = lm["ear_y"][1] + dy
+    over_ear = hair & (np.abs(X) > lm["ear_inner_x"] - 0.004) & (Y > ear_y1) & (Y < ear_y1 + 0.012) \
+        & (Z > lm["ear_z"][0] + dz - 0.008) & (Z < lm["ear_z"][1] + dz + 0.008)
+    assert over_ear.sum() == 0                                            # the hair is trimmed above the ears
+    report = checks.run(mid_v2)
+    assert report["errors"] == [] and report["warnings"] == [], report
+
+
+def test_multires_grid_helpers():
+    a = meshvox.VoxelGrid((0.0, 0.0, 0.0), 0.005, (2, 2, 2))
+    b = meshvox.VoxelGrid((0.0, 0.0, 0.0), 0.003, (4, 4, 4))
+    m = np.zeros(a.shape, bool)
+    m[0, 0, 0] = True                                                     # the 5 mm voxel [0, 5)^3
+    r = resample(m, a, b)                                                 # 3 mm centres at 1.5, 4.5, 7.5, ...
+    assert r.sum() == 8 and r[:2, :2, :2].all()
+    f = footprint(r, b, a)                                                # their centres lie in that one voxel
+    assert f.sum() == 1 and f[0, 0, 0]
+    pts = np.array([[0.001, 0.001, 0.001], [0.006, 0.001, 0.001], [-0.1, 0, 0]])
+    assert contains(m, a, pts).tolist() == [True, False, False]
+
+
+@pytest.fixture(scope="module")
+def multi():
+    return build_multires_head(MultiresParams(), name="t_multi")
+
+
+def test_multires_parts_sizes_and_bones(multi):
+    names = [p.name for p in multi.parts]
+    assert names == ["head", "eye_l", "eye_r", "ear_l", "ear_r", "lips", "brow_l", "brow_r", "hair"]
+    head = multi.part("head")
+    assert head.voxel_size == 0.005 and head.bone == "head"
+    for n in names[1:]:
+        assert multi.part(n).voxel_size == 0.003
+    assert multi.part("eye_l").bone == "eye_l" and multi.part("eye_r").bone == "eye_r"
+    assert multi.part("lips").bone == "head" and multi.part("hair").bone == "head"
+    assert head.origin[0] == pytest.approx(-head.nx * head.voxel_size / 2)   # x-centred, chin near y = 0
+    assert -0.05 < head.origin[1] < 0.0
+    report = checks.run(multi)
+    assert report["errors"] == [] and report["warnings"] == [], report
+
+
+def test_multires_seams_no_overlap_all_touch(multi):
+    seams = multi.meta["seams"]
+    for name, s in seams.items():
+        assert s["overlap"] == 0, (name, s)
+        assert s["contact"] > 0, (name, s)
+    assert seams == seam_stats(multi)
+    st = multi.meta["mesh"]
+    assert st["solid"] == multi.count_solid() and st["triangles"] == 2 * st["quads"]
+    assert st["parts"]["head"]["cells"] < st["cells"]
+
+
+def test_multires_eyeballs_are_spheres_with_iris(multi):
+    pal = multi.palette
+    for name in ("eye_l", "eye_r"):
+        eye = multi.part(name)
+        ball = eye.material == MAT_EYE
+        vs = eye.voxel_size
+        expect = 4 / 3 * np.pi * (0.012 / vs) ** 3
+        assert 0.9 * expect <= ball.sum() <= 1.15 * expect                # a 12 mm sphere (+ stalk at most)
+        cols = set(np.unique(eye.color[ball]).tolist())
+        assert {pal.index("eye_white"), pal.index("iris"), pal.index("pupil"), pal.index("highlight")} <= cols
+        assert (eye.color == pal.index("highlight")).sum() == 1
+        front = ball & (np.cumsum(ball, axis=0) == 1)                     # the front shell seen from -z
+        disc = [pal.index(k) for k in ("iris", "pupil", "highlight")]
+        assert np.isin(eye.color[front], disc).sum() >= 12                 # 5.5 mm disc = 12 voxels at 3 mm
+        assert (eye.color[front] == pal.index("pupil")).sum() == 4         # the 2 x 2 pupil
+        assert not np.isin(eye.color[~front], disc).any()                  # the iris is on the front only
+    l, r = multi.part("eye_l"), multi.part("eye_r")
+    assert np.array_equal(l.material, r.material[:, :, ::-1])
+    assert l.origin[0] == pytest.approx(-(r.origin[0] + r.nx * r.voxel_size))
+
+
+def test_multires_form_and_details_symmetric(multi):
+    for name in ("head", "lips", "hair"):
+        mat = multi.part(name).material
+        assert np.array_equal(mat, mat[:, :, ::-1]), name
+    bl, br = multi.part("brow_l"), multi.part("brow_r")
+    assert np.array_equal(bl.material, br.material[:, :, ::-1])
+    assert bl.origin[0] < 0 < br.origin[0] and br.origin[0] - (bl.origin[0] + bl.nx * bl.voxel_size) >= 0.012
+    el, er = multi.part("ear_l"), multi.part("ear_r")
+    assert np.array_equal(el.material, er.material[:, :, ::-1]) and el.origin[0] < -0.06 < 0.06 < er.origin[0]
+    head = multi.part("head")
+    assert MAT_EYE not in head.material_histogram()                       # the eyes are their own parts
+    assert head.material_histogram().get(MAT_HAIR, 0) == 0
+    lips = multi.part("lips")
+    assert set(np.unique(lips.material[lips.solid()]).tolist()) == {MAT_SKIN}
+    assert (lips.color == multi.palette.index("line")).sum() >= 6         # the mouth line
+    assert multi.meta["build"]["socket"]["opening"] > 0 and multi.meta["build"]["carved"]["scalp"] > 0

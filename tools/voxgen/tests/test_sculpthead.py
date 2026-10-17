@@ -163,7 +163,7 @@ def test_other_combinations(eyes, hair, preset):
 
 def test_params_validation():
     assert PRESETS == ("sculpt", "sculpt_broad") and EYES == ("balls", "dots", "shades")
-    assert HAIR_STYLES == ("quiff", "short", "slick", "bald") and GRIDS == ("fine", "coarse")
+    assert HAIR_STYLES == ("quiff", "short", "slick", "messy", "bald") and GRIDS == ("fine", "coarse")
     with pytest.raises(ValueError):
         SculptParams.preset_params("cube")
     with pytest.raises(ValueError):

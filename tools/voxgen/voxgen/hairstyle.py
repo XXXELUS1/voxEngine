@@ -49,6 +49,18 @@ The hair touches the scalp by construction (offset (0, 1, 0) is always in the sw
 kept to its largest 6-component. The caller carves the pocket in the form (see
 :mod:`voxgen.refhead`); this module never changes the form.
 
+Facial hair, tonsure and headscarf (the town characters) live here too, on the same landmarks:
+  :func:`jaw_mask`      the beard zone of the form's surface: below a line from the sideburn to
+                        the mouth corner, the lips and the neck left bare (stubble is painted on it);
+  :func:`beard_mask`    ``short`` (one voxel over the zone), ``full`` (a thicker cover and a block
+                        hanging under the chin), ``mustache`` (a strip between mouth and nose),
+                        ``goatee`` (chin band + mustache, joined around the mouth corners): a
+                        hair-material mask outside the form, mirror-exact, one component;
+  ``HairParams.tonsure`` a bald crown disc (a vertical cylinder of that radius about the crown
+                        axis) cut from the base mass before the clumps: a ring of hair remains;
+  :func:`headscarf_mask` a cloth shell two voxels thick over the hair, its front hem raised above
+                        the hairline so a band of hair shows, plus a tail down the nape.
+
 Decisions: clump x positions on 5 mm boundaries, so a tip is 2 x 2 fine = one coarse voxel;
 clump lists are given for x >= 0 and mirrored; everything deterministic (no hashes).
 ``hairline_y`` (metres) overrides the ``hairline_frac`` rule and ``floor_quantum`` snaps every
@@ -65,11 +77,12 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from . import meshvox
-from .body import exposed, shift
+from .body import dilate, exposed, shift
 from .checks import label_components
 from .head_from_mesh import smooth_cap
 
 STYLES = ("quiff", "short", "slick", "messy")
+BEARD_STYLES = ("stubble", "short", "full", "mustache", "goatee")
 
 
 @dataclass
@@ -150,6 +163,9 @@ class HairParams:
     lit_band: float = 0.035           # upward faces within this of the crown are lit
     deep_band: float = 0.012          # the band above the floor behind the ears is deep
     smooth_passes: int = 2
+    quantize: bool = False            # 26-neighbour cleanup of the base mass (no one-wide bumps or pits)
+    tonsure: float = 0.0              # > 0: radius (metres) of the bald crown disc cut from the base
+    tonsure_z: float = 0.0            # z of the crown axis the disc is centred on
 
     @classmethod
     def for_style(cls, style: str, **overrides) -> "HairParams":
@@ -423,7 +439,15 @@ def build_hair(form: np.ndarray, grid: meshvox.VoxelGrid, lm: dict, style: str |
     above = Y >= floor
     hair = sweep(surface, vs, p) & ~form & above & ~ear_zone(X, Y, Z, lm)
     hair = smooth_cap(hair, form, p.smooth_passes) & ~form & above
+    if p.quantize:
+        from .hybridhead import quantize_form
+        hair = quantize_form(hair | form)[0] & ~form & above
     hair |= hair[:, :, ::-1]
+    tonsure = 0
+    if p.tonsure > 0:
+        disc = (X * X + (Z - p.tonsure_z) ** 2 < p.tonsure ** 2) & (Y >= lm["ear_y"][1] + 0.025)
+        tonsure = int((hair & disc).sum())
+        hair &= ~disc
     base_mask = hair
     base = int(hair.sum())
     hair, n_clumps = add_clumps(hair, form, grid, p.clumps)
@@ -443,6 +467,115 @@ def build_hair(form: np.ndarray, grid: meshvox.VoxelGrid, lm: dict, style: str |
     lit, deep = tone_masks(hair, added & hair, form, Y, Z, floor, lm, p)
     stats = {"style": p.style, "voxel_mm": round(vs * 1000, 2), "base": base, "clumps": n_clumps, "ridge": n_ridge,
              "crumbs_removed": crumbs, "solid": int(hair.sum()), "lit": int(lit.sum()), "deep": int(deep.sum())}
+    if tonsure:
+        stats["tonsure_removed"] = tonsure
     if qstats:
         stats["quiff"] = qstats
     return HairResult(hair, lit, deep, scalp, floor, stats, p)
+
+
+# ---------------------------------------------------------------------------- facial hair, scarf
+def jaw_mask(form: np.ndarray, grid: meshvox.VoxelGrid, lm: dict) -> np.ndarray:
+    """The beard zone: surface voxels of ``form`` under a line from the sideburn (``ear_inner_x``,
+    mid-ear) to the mouth corner (``mouth_half_w`` + 6 mm, 4 mm above the mouth line), and under
+    the mouth in the middle; the lips (+-7 mm about the mouth line) and the neck stay bare; in
+    front of the ears only. Landmarks: ``mouth_y``, ``mouth_half_w``, ``chin_y``, ``ear_*``,
+    ``neck_z``, ``neck_r`` (metres)."""
+    X, Y, Z = grid.centres()
+    surf = exposed(form)
+    ax = np.abs(X)
+    mouth_y, half_w = float(lm["mouth_y"]), float(lm["mouth_half_w"])
+    ear_x = float(lm["ear_inner_x"])
+    ear_mid = 0.5 * (lm["ear_y"][0] + lm["ear_y"][1])
+    x_corner = half_w + 0.006
+    t = np.clip((ax - x_corner) / max(ear_x - x_corner, 1e-6), 0.0, 1.0)
+    y_top = (mouth_y + 0.004) * (1.0 - t) + ear_mid * t
+    y_top = np.where(ax < x_corner, mouth_y - 0.008, y_top)
+    zone = surf & (Y <= y_top) & (Z < lm["ear_z"][0]) & (ax <= ear_x)
+    zone &= ~((ax <= half_w + 0.003) & (np.abs(Y - mouth_y) <= 0.007))
+    chin_y = float(lm["chin_y"])
+    neck_front = float(lm["neck_z"]) - float(lm["neck_r"])
+    zone &= (Y >= chin_y - 0.003) & ((Y > 0.03) | (Z < neck_front - 0.002))
+    return zone & zone[:, :, ::-1]
+
+
+def _mustache_strip(form: np.ndarray, grid: meshvox.VoxelGrid, lm: dict) -> np.ndarray:
+    X, Y, Z = grid.centres()
+    surf = exposed(form)
+    mouth_y, half_w = float(lm["mouth_y"]), float(lm["mouth_half_w"])
+    strip = surf & (Y > mouth_y + 0.006) & (Y < float(lm["nose_base_y"]) - 0.001) & (np.abs(X) <= half_w + 0.006) \
+        & (Z < lm["ear_z"][0])
+    return strip & strip[:, :, ::-1]
+
+
+def beard_mask(form: np.ndarray, grid: meshvox.VoxelGrid, lm: dict, style: str) -> tuple[np.ndarray, dict]:
+    """The hair-material beard of ``style`` (``short`` / ``full`` / ``mustache`` / ``goatee``) as
+    a mask outside ``form``: the zone (:func:`jaw_mask`, the mustache strip, or the chin band and
+    the strip joined around the mouth corners for the goatee) grown by 6-connected dilation
+    (short: one voxel; the others ~6 mm; full: ~10 mm plus a block hanging ~25 mm under the
+    chin), mirror-exact, the largest component. ``stubble`` is paint, not geometry (empty mask)."""
+    if style not in BEARD_STYLES:
+        raise ValueError(f"unknown beard style {style!r}, expected one of {BEARD_STYLES}")
+    vs = grid.voxel_size
+    if style == "stubble":
+        return np.zeros(form.shape, bool), {"style": style, "solid": 0}
+    X, Y, Z = grid.centres()
+    zone = jaw_mask(form, grid, lm)
+    strip = _mustache_strip(form, grid, lm)
+    mouth_y, half_w = float(lm["mouth_y"]), float(lm["mouth_half_w"])
+    k6 = max(1, int(round(0.006 / vs)))
+    if style == "short":
+        seed, k = zone, 1
+    elif style == "full":
+        seed, k = zone | strip, max(1, int(round(0.010 / vs)))
+    elif style == "mustache":
+        seed, k = strip, k6
+    else:   # goatee: the chin band, the strip, the corner links
+        band = zone & (np.abs(X) <= half_w + 0.006)
+        links = exposed(form) & (np.abs(Y - mouth_y) <= 0.007) & (np.abs(X) >= half_w - 0.002) \
+            & (np.abs(X) <= half_w + 0.006) & (Z < lm["ear_z"][0])
+        seed, k = band | strip | links, k6
+    beard = dilate(seed, k) & ~form
+    if style == "full":
+        chin = beard & (Y <= float(lm["chin_y"]) + 0.015) & (Z < float(lm["chin_z"]) + 0.02)
+        hang = chin.copy()
+        for _ in range(max(1, int(round(0.025 / vs)))):
+            hang |= shift(hang, 0, -1, 0) & ~form
+        beard |= hang
+    beard |= beard[:, :, ::-1]
+    beard &= ~form
+    labels, n = label_components(beard)
+    crumbs = 0
+    if n > 1:
+        crumbs = int((labels > 1).sum())
+        beard = labels == 1
+    return beard, {"style": style, "solid": int(beard.sum()), "crumbs_removed": crumbs, "grow": k}
+
+
+def headscarf_mask(form: np.ndarray, hair: np.ndarray, grid: meshvox.VoxelGrid, lm: dict, p: HairParams,
+                   hem_raise: float = 0.009, thickness: float = 0.006, tail_len: float = 0.045,
+                   tail_half_w: float = 0.028) -> tuple[np.ndarray, np.ndarray, dict]:
+    """A kerchief over the hair: a cloth shell ``thickness`` thick around the hair mass, cut at
+    the hair floor raised by ``hem_raise`` in front of the sideburns (a band of hair shows under
+    the hem) and at the floor elsewhere, the ears free; plus a tail ``tail_len`` long and
+    ``2 x tail_half_w`` wide down the back of the neck behind the ears. Returns ``(scarf, hem,
+    stats)``: ``hem`` = scarf voxels with air below (the front hem, the tail's end)."""
+    X, Y, Z = grid.centres()
+    vs = grid.voxel_size
+    floor = hair_floor(X, Z, lm, p)
+    front = Z < lm["ear_z"][0] - p.sideburn_depth
+    sfloor = np.where(front, floor + hem_raise, floor)
+    t = max(1, int(round(thickness / vs)))
+    cover = dilate(hair, t) & ~hair & ~form & (Y >= sfloor) & ~ear_zone(X, Y, Z, lm)
+    box = (np.abs(X) <= tail_half_w) & (Z >= lm["ear_z"][1] + 0.012) & (Y < floor) & (Y >= floor - tail_len)
+    tail = dilate(form | hair, t) & ~form & ~hair & box
+    scarf = cover | tail
+    scarf |= scarf[:, :, ::-1]
+    labels, n = label_components(scarf)
+    crumbs = 0
+    if n > 1:
+        crumbs = int((labels > 1).sum())
+        scarf = labels == 1
+    hem = scarf & ~shift(scarf | hair | form, 0, 1, 0)
+    return scarf, hem, {"solid": int(scarf.sum()), "tail": int((tail & scarf).sum()), "hem": int(hem.sum()),
+                        "crumbs_removed": crumbs}

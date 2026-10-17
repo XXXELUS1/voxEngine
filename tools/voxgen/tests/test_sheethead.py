@@ -16,7 +16,7 @@ from voxgen import checks
 from voxgen.blockhead import U_M, Block, Builder, Frame, make_palette
 from voxgen.materials import (MAT_AIR, MAT_CLOTH, MAT_EYE, MAT_FAT, MAT_HAIR, MAT_MUSCLE, MAT_PLANT, MAT_SKIN,
                               MAT_TOOTH)
-from voxgen.sheethead import (CAVITY_X, CAVITY_Y, DEFAULT_MAPS, EAR_NOTCHES, EARS, SKULL_MID_Z, TEETH_X,
+from voxgen.sheethead import (CAVITY_X, CAVITY_Y, DEFAULT_MAPS, EAR_NOTCHES, EARS, LIP_THICK, SKULL_MID_Z, TEETH_X,
                               apply_layer, build_head, build_parts, cell_box, dilate, fills, footprint,
                               frame_extent, load_maps, make_frame)
 
@@ -92,9 +92,9 @@ def test_cell_box_front_side_profile_mirror(maps):
     assert (m.x0, m.x1, m.y0, m.y1, m.z0, m.z1) == (3.25, 3.5, 8.75, 9.0, -0.5, 0.0)
     s = cell_box(maps.HAIR_SIDE, 1, 10, "C")             # side map: columns are z, depth is x
     assert (s.x0, s.x1, s.y0, s.y1, s.z0, s.z1) == (-5.5, 5.5, 11.0, 11.5, 3.5, 4.0)
-    p = cell_box(maps.SKULL, 0, 13, "2")                 # profile map: the dome's top row, half-width 2
-    assert (p.x0, p.x1, p.y0, p.y1, p.z0, p.z1) == (-2.0, 2.0, 13.0, 13.5, 4.0, 4.5)
-    n = cell_box(maps.SKULL, 16, 1, "1")                 # the nose tip cell: y 5..5.5, z -2..-1.5, |x| < 1
+    p = cell_box(maps.SKULL, 1, 14, "2")                 # profile map: the dome's second row, half-width 2
+    assert (p.x0, p.x1, p.y0, p.y1, p.z0, p.z1) == (-2.0, 2.0, 13.0, 13.5, 4.5, 5.0)
+    n = cell_box(maps.SKULL, 17, 1, "1")                 # the nose tip cell: y 5..5.5, z -2..-1.5, |x| < 1
     assert (n.x0, n.x1, n.y0, n.y1, n.z0, n.z1) == (-1.0, 1.0, 5.0, 5.5, -2.0, -1.5)
     assert fills(maps.SKULL)["D"] == (-4.5, 4.5) and fills(maps.BEARD) == {}
     with pytest.raises(ValueError):
@@ -113,9 +113,9 @@ def test_footprint_matches_the_cells_and_their_mirror(maps):
     fs = footprint(f, maps.HAIR_SIDE, "B")               # (ny, nz): the nape clumps, e.g. z 15..15.5 at y 10..10.5
     assert fs[(Y[:, 0] >= 10) & (Y[:, 0] < 10.5)][:, (Z[0] >= 15) & (Z[0] < 15.5)].all()
     assert not fs[:, Z[0] < 14].any()
-    fn = footprint(f, maps.SKULL, "1")                   # (ny, nz): the nose cube z -2..0 at y 4.5..6
+    fn = footprint(f, maps.SKULL, "1")                   # (ny, nz): the nose cube z -2..0 at y 4.5..6 (and the crown)
     assert fn[(Y[:, 0] >= 4.5) & (Y[:, 0] < 6)][:, (Z[0] >= -2) & (Z[0] < 0)].all()
-    assert not fn[:, Z[0] < -2].any() and not fn[Y[:, 0] >= 8].any()
+    assert not fn[:, Z[0] < -2].any() and not fn[(Y[:, 0] >= 8) & (Y[:, 0] < 13)].any()
 
 
 # ---------------------------------------------------------------------------- fills
@@ -275,9 +275,10 @@ def test_parts_order_and_materials(head):
     assert head.meta["mid_z"] == SKULL_MID_Z and head.meta["layers"]["face"][0]["cut"] == 272
 
 
-@pytest.mark.xfail(strict=True, reason="barber_maps: BEARD rows 1-4 ('#' ends at x -3) leave a 1/2 U gap to the "
-                   "moustache (FACE 'm', x -2.5..2.5), so the moustache is an island of the beard part resting on "
-                   "the skull. Remove this marker once the maps are fixed.")
+@pytest.mark.xfail(strict=True, reason="barber_maps: HAIR_FRONT rows 3-5 cols 22-23 (the right temple tuft 'b', "
+                   "x 4..5, y 9..10.5) touch no other hair, and HAIR_SIDE row 16 col 26 (y 3.5..4, z 11.5..12) is "
+                   "pinched to 8 voxels a side: hair islands resting on the skull. Remove this marker once the maps "
+                   "are fixed.")
 def test_checks_clean(head):
     report = checks.run(head)
     assert report["errors"] == []
@@ -289,7 +290,8 @@ def test_check_errors_are_only_islands_resting_on_other_parts(head):
     assert len(report["errors"]) == len(head.meta["islands"])
     for isl in head.meta["islands"]:
         assert isl["resting_on"], isl
-    assert report["warnings"] == [] and exposed_tissue(head.part("skull")) == 0
+    assert [w for w in report["warnings"] if "enclosed air pocket" not in w] == []     # the sealed mouth, by design
+    assert len(report["warnings"]) == 1 and exposed_tissue(head.part("skull")) == 0
 
 
 def test_skull_and_beard_are_mirror_exact(head):
@@ -308,14 +310,15 @@ def test_skull_profile_from_the_map(head):
         assert at(s, 0.125, y, front + 0.125) == MAT_SKIN and at(s, 0.125, y, front - 0.125) == MAT_AIR
     assert at(s, 0.125, 8.25, 0.125) == MAT_SKIN and at(s, 0.125, 8.25, -0.125) == MAT_AIR   # the bridge ends at y 8
     assert at(s, 0.125, 1.75, -0.375) == MAT_SKIN and at(s, 0.125, 1.75, -0.625) == MAT_AIR  # chin 1/2 U proud
-    assert at(s, 2.375, 1.75, -0.375) == MAT_SKIN and at(s, 2.625, 1.75, -0.375) == MAT_AIR  # ... and 5 wide
+    assert at(s, 1.875, 1.75, -0.375) == MAT_SKIN and at(s, 2.125, 1.75, -0.375) == MAT_AIR  # ... and 4 wide
     assert at(s, 3.875, 5, 0.125) == MAT_SKIN and at(s, 4.125, 5, 0.125) == MAT_AIR         # cheek plane 8 wide
     assert at(s, 4.125, 5, 0.625) == MAT_SKIN                                                # 9 wide from z 0.5
     assert at(s, 4.875, 9, 6) == MAT_SKIN and at(s, 5.125, 9, 6) == MAT_AIR                 # sides 10 wide
     for y, z in ((11.25, 1.5), (11.75, 2.0)):                                                # the sloping forehead
         assert at(s, 0.125, y, z + 0.125) == MAT_SKIN and at(s, 0.125, y, z - 0.125) == MAT_AIR
-    assert at(s, 0.125, 13.25, 6) == MAT_SKIN and at(s, 2.125, 13.25, 6) == MAT_AIR         # the dome's top row
-    assert at(s, 0.125, 13.75, 6) == MAT_AIR
+    assert at(s, 0.125, 13.25, 6) == MAT_SKIN and at(s, 2.125, 13.25, 6) == MAT_AIR         # the dome: y 13..13.5 |x| < 2
+    assert at(s, 0.125, 13.75, 6.125) == MAT_SKIN and at(s, 1.125, 13.75, 6.125) == MAT_AIR  # ... y 13.5..14 |x| < 1
+    assert at(s, 0.125, 14.25, 6) == MAT_AIR
     assert at(s, 0.125, 8.75, 12.875) == MAT_SKIN and at(s, 0.125, 8.75, 13.125) == MAT_AIR  # the back at z 13
     assert at(s, 0.125, 2.25, 11.375) == MAT_SKIN and at(s, 0.125, 2.25, 11.625) == MAT_AIR  # the occiput curves in
     assert at(s, 0.125, -1, 5.625) == MAT_SKIN and at(s, 0.125, -1, 5.625, "color") == head.palette.index("skin_shadow")
@@ -335,17 +338,22 @@ def test_ears_mouth_and_nostrils(head):
         assert at(s, sx * 5.375, 5.5, 8.5) == MAT_SKIN and at(s, sx * 5.375, 5.5, 8.5, "color") == shadow   # floor
         assert at(s, sx * 5.75, 5.5, 7.875) == MAT_SKIN and at(s, sx * 5.75, 5.5, 7.875, "color") == shadow  # wall
         assert at(s, sx * 5.75, 6.125, 8.5, "color") == shadow and at(s, sx * 5.75, 6.375, 8.5, "color") == skin
-    # the mouth: 5 U wide, 1 U deep from the face plane, open to the front, teeth on the back wall
-    for z in (0.125, 0.625):
-        assert at(s, 0.125, 3.5, z) == MAT_AIR and at(s, -2.375, 3.5, z) == MAT_AIR
+    # the mouth: 5 U wide, 1 U deep from the face plane behind closed lips (1 fine of skin, the mouth
+    # line on the slit row y 3.5..3.75 only), teeth on the back wall
+    for x in (0.125, -2.375, 2.375):
+        assert at(s, x, 3.625, 0.125) == MAT_SKIN and at(s, x, 3.625, 0.125, "color") == shadow     # the slit row
+        assert at(s, x, 3.375, 0.125) == MAT_SKIN and at(s, x, 3.375, 0.125, "color") == skin       # the lower lip row
+        for z in (0.375, 0.625):
+            assert at(s, x, 3.5, z) == MAT_AIR and at(s, x, 3.375, z) == MAT_AIR
+    assert at(s, -2.625, 3.625, 0.125, "color") == skin and at(s, 0.125, 3.875, 0.125, "color") == skin
     assert at(s, -2.625, 3.5, 0.375) == MAT_SKIN and at(s, 0.125, 3.125, 0.375) == MAT_SKIN
-    assert at(s, 0.125, 3.5, 1.125) == MAT_SKIN
+    assert at(s, 0.125, 3.5, 1.125) == MAT_SKIN and LIP_THICK == 0.25
     for k in TEETH_X:
         assert at(s, (k + 1) / 4, 3.5, 0.875) == MAT_TOOTH, k
     for x in (-1.875, -0.375, 0.375, 1.875):             # the 1-fine gaps
         assert at(s, x, 3.5, 0.875) == MAT_AIR, x
-    assert at(s, 0.125, 3.5, -0.125) == MAT_AIR          # nothing of the skull in front of the mouth
-    assert at(head.part("beard"), 0.125, 3.5, -0.125) == MAT_HAIR   # ... the moustache covers it
+    assert at(s, 0.125, 3.5, -0.125) == MAT_AIR          # nothing of the skull in front of the lips
+    assert at(head.part("beard"), 0.125, 3.5, -0.125) == MAT_HAIR   # ... the moustache covers them
     dark = pal.index("eye_frame")                        # nostrils: the cube's bottom-front fine voxels at x +-0.5
     for x in (-0.625, 0.625):
         assert at(s, x, 4.625, -1.375, "color") == dark and at(s, x, 4.625, -1.125, "color") == dark
@@ -380,7 +388,7 @@ def test_beard_is_a_shell_on_the_skull(built):
     base = skull | moustache                                                   # what the shell grew from
     shell = beard & ~moustache
     assert not (shell & ~dilate(base, 3)).any() and (shell & ~dilate(base, 2)).any()
-    assert at_unit(f, parts["beard"], -1, 0.25, -0.625) == MAT_HAIR and at_unit(f, parts["beard"], -1, 0.25, -0.875) == MAT_AIR
+    assert at_unit(f, parts["beard"], -1, 0.25, -1.125) == MAT_HAIR and at_unit(f, parts["beard"], -1, 0.25, -1.375) == MAT_AIR  # 3 fine before the chin (z -0.5)
     assert at_unit(f, parts["beard"], -1, -0.375, 0.25) == MAT_HAIR            # '=' hangs under the chin
     assert reports["beard"][0]["added"] == int(shell.sum()) > 0
 
@@ -398,7 +406,7 @@ def test_layers_never_touch_the_skull(built, maps):
     base = tmp["skull"].solid()
     for e in EARS:
         base |= f.mask(e)
-    base &= ~f.box(CAVITY_X[0], CAVITY_X[1], CAVITY_Y[0], CAVITY_Y[1], 0, 1)
+    base &= ~f.box(CAVITY_X[0], CAVITY_X[1], CAVITY_Y[0], CAVITY_Y[1], LIP_THICK, 1)
     for n in EAR_NOTCHES:
         base &= ~f.mask(n)
     removed = base & ~parts["skull"].solid()               # only the eye and philtrum recesses take skull voxels away
@@ -412,8 +420,11 @@ def test_bald_is_the_skull_and_face_alone(bald, head):
     assert bald.name == "bald" and [p.name for p in bald.parts] == ["skull"]
     s = bald.part("skull")
     assert mirrored(s) and mirrored(s, "color") and exposed_tissue(s) == 0
-    assert checks.run(bald)["errors"] == []
-    assert at(s, 0.125, 3.5, 0.125) == MAT_AIR and at(s, 0.125, 3.5, -0.125) == MAT_AIR     # the mouth line shows
+    report = checks.run(bald)
+    assert report["errors"] == [] and [w for w in report["warnings"] if "enclosed air pocket" not in w] == []
+    assert at(s, 0.125, 3.625, 0.125) == MAT_SKIN and at(s, 0.125, 3.5, -0.125) == MAT_AIR   # the closed lips show
+    assert at(s, 0.125, 3.625, 0.125, "color") == bald.palette.index("skin_shadow")            # ... with the mouth line
+    assert at(s, 0.125, 3.5, 0.625) == MAT_AIR and at(s, 0.125, 3.5, 0.875) == MAT_TOOTH      # teeth hidden behind
     assert at(s, -2, 8.5, -0.25) == MAT_HAIR                                                 # brows stay
     assert at(s, 0.125, 5, -1.875) == MAT_SKIN and at(s, 5.75, 4.5, 7.5) == MAT_SKIN
     assert np.array_equal(s.material, head.part("skull").material)                           # the same skull

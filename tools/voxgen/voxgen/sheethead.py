@@ -35,12 +35,15 @@ material of the voxel it recolours. ``materials`` overrides the material per cha
 The skull: the first layer must be the profile map named ``skull`` (its fill is the skin form of
 the skull and neck). The engine then adds the ears (``EARS``, 1 U proud) with a notch cut into
 each outer face (``EAR_NOTCHES``, its floor and walls painted ``NOTCH_TONE``), cuts the mouth
-cavity (``CAVITY_X`` x ``CAVITY_Y``, ``CAVITY_DEPTH`` deep from the face surface it finds there,
-open to the front: a clean-shaven head shows the mouth as a dark line), layers the whole form by
-depth (skin 2 fine, fat, muscle, bone: ``voxchar.HEAD_BANDS``), stands the teeth (``TEETH_X``:
-seven 2-fine teeth with 1-fine gaps fill the 5 U back wall exactly, mirror-exact, the middle
-tooth on the axis - eight such teeth would need 5.75 U) against the cavity's back wall and
-shades the neck (y < 0) in ``NECK_TONE``. A layer that recesses re-skins the part afterwards (:func:`reskin`:
+cavity (``CAVITY_X`` x ``CAVITY_Y``, ``CAVITY_DEPTH`` deep from the face surface it finds there)
+behind closed lips: the cavity's front ``LIP_THICK`` stays skin and only its ``LIP_SLIT_Y`` fine
+row is coloured ``LIP_TONE`` across the mouth's width, so a clean-shaven head shows a thin dark
+mouth line and the teeth stay hidden until the lips are cut (the sealed cavity is an enclosed
+air pocket: ``checks`` warns about it, by design). It layers the whole form by depth (skin
+2 fine, fat, muscle, bone: ``voxchar.HEAD_BANDS``), stands the teeth (``TEETH_X``: seven 2-fine
+teeth with 1-fine gaps fill the 5 U back wall exactly, mirror-exact, the middle tooth on the
+axis - eight such teeth would need 5.75 U) against the cavity's back wall and shades the neck
+(y < 0) in ``NECK_TONE``. A layer that recesses re-skins the part afterwards (:func:`reskin`:
 every fat / muscle / bone voxel the cut left within the skin band of the new surface becomes
 skin, so a socket's walls never show fat). After the ``face`` layer the two nostrils
 (``NOSTRILS``: one fine voxel wide at x = +-0.5, 2 fine deep) are painted dark on the nose
@@ -92,6 +95,9 @@ EAR_NOTCHES = both(Block(5.5, 6, 5, 6, 8, 9))
 NOTCH_TONE = "skin_shadow"
 #: the mouth cavity: x and y ranges and the depth (units) cut from the face surface backwards
 CAVITY_X, CAVITY_Y, CAVITY_DEPTH = (-2.5, 2.5), (3.25, 3.75), 1.0
+#: the lips: the cavity's front wall (units) stays skin; the fine row starting at ``LIP_SLIT_Y``
+#: is coloured ``LIP_TONE`` across the mouth's width (the mouth line)
+LIP_THICK, LIP_SLIT_Y, LIP_TONE = 0.25, 3.5, "skin_shadow"
 #: fine x of each tooth's left edge (x = k / FINE) and the tooth width in fine voxels: seven
 #: 2-fine teeth with 1-fine gaps across the 5 U back wall (mirror-exact)
 TEETH_X, TOOTH_W = (-10, -7, -4, -1, 2, 5, 8), 2
@@ -444,13 +450,15 @@ def cavity_block(f: Frame, form: np.ndarray) -> Block:
 
 def finish_skull(bd: Builder, part: Part) -> Block:
     """Turn the skull layer's skin fill into the skull: the ears with their notches, the mouth
-    cavity with its teeth, the tissues by depth, the neck and notch tones. Returns the cavity block."""
+    cavity with its teeth behind closed lips, the tissues by depth, the neck, notch and lip tones.
+    Returns the cavity block (lips included)."""
     f = bd.f
     form = part.solid()
     for b in EARS:
         form |= f.mask(b)
     cavity = cavity_block(f, form)
-    hollow = f.mask(cavity)
+    hollow = f.mask(Block(cavity.x0, cavity.x1, cavity.y0, cavity.y1, cavity.z0 + LIP_THICK, cavity.z1))
+    slit = f.mask(Block(cavity.x0, cavity.x1, LIP_SLIT_Y, LIP_SLIT_Y + 1 / FINE, cavity.z0, cavity.z0 + LIP_THICK))
     notches = np.zeros(f.shape, bool)
     for b in EAR_NOTCHES:
         notches |= f.mask(b)
@@ -461,6 +469,7 @@ def finish_skull(bd: Builder, part: Part) -> Block:
     layer_tissues(part, form, HEAD_BANDS, bd.pal.index)
     bd.recolor(part, f.full(f.Y < 0), NECK_TONE)
     bd.recolor(part, dilate(notches, 1) & ~notches, NOTCH_TONE)     # the notch's floor and walls
+    bd.recolor(part, slit, LIP_TONE)                                  # the mouth line on the closed lips
     for k in TEETH_X:
         bd.place(part, Block(k / FINE, (k + TOOTH_W) / FINE, cavity.y0, cavity.y1, cavity.z1 - TOOTH_DEPTH,
                              cavity.z1, "tooth", M.MAT_TOOTH), clip=False)

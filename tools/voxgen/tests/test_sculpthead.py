@@ -157,7 +157,7 @@ def test_other_combinations(eyes, hair, preset):
     assert checks.run(m)["errors"] == []
     hair_part = m.part("hair")
     tones = {m.palette.name_of(int(c)) for c in np.unique(hair_part.color[hair_part.solid()])}
-    assert tones == {"hair", "hair_light", "hair_deep"}
+    assert tones == {"hair", "hair_deep"}            # flat-topped styles: no lit crown (it read as a bald disc)
     assert m.meta["seams"]["hair"]["overlap"] == 0
 
 

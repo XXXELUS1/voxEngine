@@ -79,7 +79,7 @@ import numpy as np
 from . import meshvox
 from .body import dilate, exposed, shift
 from .checks import label_components
-from .head_from_mesh import smooth_cap
+from .head_from_mesh import box_dilate, smooth_cap
 
 STYLES = ("quiff", "short", "slick", "messy")
 BEARD_STYLES = ("stubble", "short", "full", "mustache", "goatee")
@@ -511,7 +511,7 @@ def _mustache_strip(form: np.ndarray, grid: meshvox.VoxelGrid, lm: dict) -> np.n
 def beard_mask(form: np.ndarray, grid: meshvox.VoxelGrid, lm: dict, style: str) -> tuple[np.ndarray, dict]:
     """The hair-material beard of ``style`` (``short`` / ``full`` / ``mustache`` / ``goatee``) as
     a mask outside ``form``: the zone (:func:`jaw_mask`, the mustache strip, or the chin band and
-    the strip joined around the mouth corners for the goatee) grown by 6-connected dilation
+    the strip joined around the mouth corners for the goatee) grown by 26-neighbour dilation
     (short: one voxel; the others ~6 mm; full: ~10 mm plus a block hanging ~25 mm under the
     chin), mirror-exact, the largest component. ``stubble`` is paint, not geometry (empty mask)."""
     if style not in BEARD_STYLES:
@@ -535,7 +535,14 @@ def beard_mask(form: np.ndarray, grid: meshvox.VoxelGrid, lm: dict, style: str) 
         links = exposed(form) & (np.abs(Y - mouth_y) <= 0.007) & (np.abs(X) >= half_w - 0.002) \
             & (np.abs(X) <= half_w + 0.006) & (Z < lm["ear_z"][0])
         seed, k = band | strip | links, k6
-    beard = dilate(seed, k) & ~form
+    beard = seed
+    for _ in range(k):                                  # 26-dilation: one 6-connected piece round corners
+        beard = box_dilate(beard)
+    beard &= ~form
+    # the growth never climbs the nose: under the nose base in the middle (the sideburn columns
+    # outside the mouth's width + 12 mm may reach the ear)
+    centre = np.abs(X) <= half_w + 0.012
+    beard &= ~(centre & (Y >= float(lm["nose_base_y"]) + 0.5 * vs))
     if style == "full":
         chin = beard & (Y <= float(lm["chin_y"]) + 0.015) & (Z < float(lm["chin_z"]) + 0.02)
         hang = chin.copy()
@@ -566,9 +573,12 @@ def headscarf_mask(form: np.ndarray, hair: np.ndarray, grid: meshvox.VoxelGrid, 
     front = Z < lm["ear_z"][0] - p.sideburn_depth
     sfloor = np.where(front, floor + hem_raise, floor)
     t = max(1, int(round(thickness / vs)))
-    cover = dilate(hair, t) & ~hair & ~form & (Y >= sfloor) & ~ear_zone(X, Y, Z, lm)
+    grown_hair, grown_all = hair, hair | form
+    for _ in range(t):                                  # 26-dilation: one 6-connected shell round corners
+        grown_hair, grown_all = box_dilate(grown_hair), box_dilate(grown_all)
+    cover = grown_hair & ~hair & ~form & (Y >= sfloor) & ~ear_zone(X, Y, Z, lm)
     box = (np.abs(X) <= tail_half_w) & (Z >= lm["ear_z"][1] + 0.012) & (Y < floor) & (Y >= floor - tail_len)
-    tail = dilate(form | hair, t) & ~form & ~hair & box
+    tail = grown_all & ~form & ~hair & box
     scarf = cover | tail
     scarf |= scarf[:, :, ::-1]
     labels, n = label_components(scarf)

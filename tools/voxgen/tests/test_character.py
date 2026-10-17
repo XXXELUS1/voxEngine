@@ -117,7 +117,9 @@ def test_beards_are_one_piece_outside_the_form(style, head5):
     labels, n = checks.label_components(beard)
     assert n == 1
     X, Y, Z = grid.centres()
-    assert float(Y[beard].max()) < lm["nose_base_y"] + 0.002          # never above the nose base
+    assert float(Y[beard].max()) < lm["ear_y"][1] + 0.002             # never above the ear top (the sideburn end)
+    centre = beard & (np.abs(X) <= lm["mouth_half_w"] + 0.012)
+    assert float(Y[centre].max()) < lm["nose_base_y"] + grid.voxel_size   # under the nose in the middle
     if style == "mustache":
         assert float(Y[beard].min()) > lm["mouth_y"]                   # above the mouth only
     if style == "full":

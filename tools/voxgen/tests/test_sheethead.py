@@ -332,7 +332,7 @@ def test_ears_mouth_and_nostrils(head):
     # the mouth: 5 U wide, 1 U deep from the face plane behind closed lips (1 fine of skin, the mouth
     # line on the slit row y 3.5..3.75 only), teeth on the back wall
     for x in (0.125, -2.375, 2.375):
-        assert at(s, x, 3.625, 0.125) == MAT_CARTILAGE and at(s, x, 3.625, 0.125, "color") == shadow     # the slit row (cubic)
+        assert at(s, x, 3.625, 0.125) == MAT_CARTILAGE and at(s, x, 3.625, 0.125, "color") == pal.index("eye_frame")   # the slit row (cubic, dark)
         assert at(s, x, 3.375, 0.125) == MAT_SKIN and at(s, x, 3.375, 0.125, "color") == skin       # the lower lip row
         for z in (0.375, 0.625):
             assert at(s, x, 3.5, z) == MAT_AIR and at(s, x, 3.375, z) == MAT_AIR
@@ -415,7 +415,7 @@ def test_bald_is_the_skull_and_face_alone(bald, head):
     report = checks.run(bald)
     assert report["errors"] == [] and [w for w in report["warnings"] if "enclosed air pocket" not in w] == []
     assert at(s, 0.125, 3.625, 0.125) == MAT_CARTILAGE and at(s, 0.125, 3.5, -0.125) == MAT_AIR   # the closed lips show (the slit row is cubic cartilage)
-    assert at(s, 0.125, 3.625, 0.125, "color") == bald.palette.index("skin_shadow")            # ... with the mouth line
+    assert at(s, 0.125, 3.625, 0.125, "color") == bald.palette.index("eye_frame")              # ... with the dark mouth line
     assert at(s, 0.125, 3.5, 0.625) == MAT_AIR and at(s, 0.125, 3.5, 0.875) == MAT_TOOTH      # teeth hidden behind
     assert at(s, -2, 8.5, -0.25) == MAT_HAIR                                                 # brows stay
     assert at(s, 0.125, 5, -1.875) == MAT_SKIN and at(s, 5.75, 4.5, 7.5) == MAT_CARTILAGE

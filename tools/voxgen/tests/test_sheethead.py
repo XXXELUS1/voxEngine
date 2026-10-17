@@ -301,7 +301,7 @@ def test_skull_profile_from_the_map(head):
         assert at(s, 0.125, y, front + 0.125) == MAT_SKIN and at(s, 0.125, y, front - 0.125) == MAT_AIR
     assert at(s, 0.125, 8.25, 0.125) == MAT_SKIN and at(s, 0.125, 8.25, -0.125) == MAT_AIR   # the bridge ends at y 8
     assert at(s, 0.125, 1.75, -0.375) == MAT_SKIN and at(s, 0.125, 1.75, -0.625) == MAT_AIR  # chin 1/2 U proud
-    assert at(s, 2.375, 1.75, -0.375) == MAT_SKIN and at(s, 2.625, 1.75, -0.375) == MAT_AIR  # ... and 5 wide
+    assert at(s, 1.875, 1.75, -0.375) == MAT_SKIN and at(s, 2.125, 1.75, -0.375) == MAT_AIR  # ... and 4 wide
     assert at(s, 3.875, 5, 0.125) == MAT_SKIN and at(s, 4.125, 5, 0.125) == MAT_AIR         # cheek plane 8 wide
     assert at(s, 4.125, 5, 0.625) == MAT_SKIN                                                # 9 wide from z 0.5
     assert at(s, 4.875, 9, 6) == MAT_SKIN and at(s, 5.125, 9, 6) == MAT_AIR                 # sides 10 wide

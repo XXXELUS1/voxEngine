@@ -39,9 +39,8 @@ COLOURS = {
 # Skull + neck as a PROFILE width map (1/2 U cells): columns z -2.5..14, rows y 14 -> -3.
 # Half-width codes: 1=1 A=1.5 2=2 B=2.5 3=3 C=3.5 4=4 D=4.5 5=5. After docs/reference/bald-head-
 # turnaround.png: the face is 8 wide (4) at the cheek plane z 0 and the sides 10 wide (5) from the
-# brow down to the cheekbones; every silhouette transition is 45 degrees (1/2 U per 1/2 U) or 90,
-# because the facet mesher chamfers only 1:1 steps (a 2:1 slope comes out serrated): the crown is
-# a 45-degree dome from y 11 to the flat top at y 14, the back is rounded in 1/2 U steps; the forehead slopes back from the
+# brow down to the cheekbones; the crown is a dome that curves (the front and back move in faster
+# toward the top, y 11..14; its 2:1 runs are planes for the `slopes` mesher); the back is rounded; the forehead slopes back from the
 # brow to the hairline; the nose (x +-1) is a 45-degree wedge from the bridge down to a 2 U cube 2 U
 # proud; below the cheekbones the jaw tapers to the chin in 1/2 U steps (mouth rows 8 wide, chin
 # 4..5 wide, 1/2 U proud) and its underside rises at 45 degrees from the chin into the neck front
@@ -51,16 +50,16 @@ SKULL = dict(
     view="profile", cell=0.5, origin=(-2.5, 14.0), material="MAT_SKIN", colour="skin",
     width={"a": 0.5, "1": 1.0, "A": 1.5, "2": 2.0, "B": 2.5, "3": 3.0, "C": 3.5, "4": 4.0, "D": 4.5, "5": 5.0},
     rows=[
-        "...........222222222222222.......",  # y 13.5..14
-        "..........BBBBBBBBBBBBBBBBB......",  # y 13..13.5
-        ".........3333333333333333333.....",  # y 12.5..13
-        "........CCCCCCCCCCCCCCCCCCCB3....",  # y 12..12.5
-        ".......4444444444444444444443C...",  # y 11.5..12
-        "......4DDDDDDDDDDDDDDDDDDDDDDC4..",  # y 11..11.5
-        "......4D55555555555555555553C4D..",  # y 10.5..11
-        ".....4D555555555555555555553C4D..",  # y 10..10.5
-        ".....4D555555555555555555553C4D..",  # y 9.5..10
-        ".....4D555555555555555555553C4D..",  # y 9..9.5
+        ".................11111...........",  # y 13.5..14
+        "..............2222222211A........",  # y 13..13.5
+        "............333333333333A2B......",  # y 12.5..13
+        "..........C44444444444444B3C.....",  # y 12..12.5
+        ".........4DDDDDDDDDDDDDDDB3C4....",  # y 11.5..12
+        "........4D55555555555555553C4D...",  # y 11..11.5
+        ".......4D5555555555555555553C4D..",  # y 10.5..11
+        ".......4D5555555555555555553C4D..",  # y 10..10.5
+        "......4D55555555555555555553C4D..",  # y 9.5..10
+        "......4D55555555555555555553C4D..",  # y 9..9.5
         ".....4D555555555555555555553C4D..",  # y 8.5..9
         ".....4D555555555555555555553C4D..",  # y 8..8.5
         "....14D555555555555555555553C4D..",  # y 7.5..8
@@ -72,13 +71,13 @@ SKULL = dict(
         ".11114D555555555555555555555C4D..",  # y 4.5..5
         ".....4D555555555555555555555C4D..",  # y 4..4.5
         ".....4DDDDDDDDDDDDDDDDDDDDDD3C4..",  # y 3.5..4
-        ".....4DDDDDDDDDDDDDDDDDDDDDD3C4..",  # y 3..3.5
-        ".....C444444444444444444444B3C...",  # y 2.5..3
-        "....BC44444444444444444444B3C....",  # y 2..2.5
-        "....B3CCCCCCCC..22BBBBBBBB22.....",  # y 1.5..2
-        "....B3CCCCCCC...22BBBBBBBB22.....",  # y 1..1.5
-        "....BB333333....22BBBBBBBB22.....",  # y 0.5..1
-        "....22BBBBB.....22BBBBBBBB22.....",  # y 0..0.5
+        ".....C4DDDDDDDDDDDDDDDDDDDD3C4...",  # y 3..3.5
+        ".....C44444444444444444444B3C....",  # y 2.5..3
+        "....23C444444444444444444B3C.....",  # y 2..2.5
+        "....23CCCCCCCC..22BBBBBBBB22.....",  # y 1.5..2
+        "....2B333333....22BBBBBBBB22.....",  # y 1..1.5
+        "....2B3333......22BBBBBBBB22.....",  # y 0.5..1
+        "....22BB........22BBBBBBBB22.....",  # y 0..0.5
         "................22BBBBBBBB22.....",  # y -0.5..0
         "................22BBBBBBBB22.....",  # y -1..-0.5
         "................22BBBBBBBB22.....",  # y -1.5..-1
@@ -174,17 +173,17 @@ BERET = dict(
            "F": (2.5, 9.5), "G": (4.0, 8.0)},
     palette={"red": 45, "red_light": 25, "red_dark": 20, "red_crease": 10}, block=1.5,
     rows=[
-        "..............FFF...FF..............",  # y 17.5-18 crown crumples
-        "..........EEEEEEEEEEEEEE............",  # y 17-17.5 crown x -4..3
-        "........EEDDDDDDDDDDDDDDE...........",  # y 16.5-17
-        "......DDDCCCCCCCCCCCCCCCDDD.........",  # y 16-16.5
-        ".....DCCCBBBBBBBBBBBBBBBCCCD........",  # y 15.5-16
-        "....CCBBBBAAAAAAAAAAAAAABBBCC.......",  # y 15-15.5
-        "...CBBAAAAAAAAAAAAAAAAAAAABBBC......",  # y 14.5-15
-        "..CBBAAAAAAAAAAAAAAAAAAAAAABBC......",  # y 14-14.5
-        ".CBBAAAAAAAAAAAAAAAAAAAAAAAABBC.....",  # y 13.5-14
-        "DCBBAAAAAAAAAAAAAAAAAAAAAAAAABBC....",  # y 13-13.5 widest
-        "DCBBBBBBBBBBBBBBBBBBBBBBBBBBBBCD....",  # y 12.5-13
+        "..............GGG...GG..............",  # y 17.5-18 crown crumples
+        "..........FFFFFFFFFFFFFF............",  # y 17-17.5 crown (each depth code spans 1 U: chunky steps, not pancakes)
+        ".........FFFFFFFFFFFFFFFF...........",  # y 16.5-17
+        ".......EEEEEEEEEEEEEEEEEE...........",  # y 16-16.5
+        "......EEEEEEEEEEEEEEEEEEEEE.........",  # y 15.5-16
+        ".....DDDDDDDDDDDDDDDDDDDDDDD........",  # y 15-15.5
+        "....DDDDDDDDDDDDDDDDDDDDDDDDD.......",  # y 14.5-15
+        "...BBBBBBBBBBBBBBBBBBBBBBBBBBB......",  # y 14-14.5
+        "..BBBBBBBBBBBBBBBBBBBBBBBBBBBBB.....",  # y 13.5-14
+        ".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA....",  # y 13-13.5 widest
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA....",  # y 12.5-13
         ".DDDDDCCCCCCCCCCCCCCCCCCCCCCCC......",  # y 12-12.5 band x -5.5..5.5, droop x -8.5..-6
         ".DDDDDDCCCCCCCCCCCCCCCCCCCCCC.......",  # y 11.5-12
         "..DDDDD.............................",  # y 11-11.5 droop over the left temple
@@ -247,24 +246,24 @@ HAIR_SIDE = dict(
     palette={"hair": 5, "hair_dark": 3, "hair_light": 2}, block=1.0,
     rows=[
         ".....................................",  # y 11.5..12
-        "......CCCCCCCCCCCCCCCCCCCCCCCCCCB....",  # y 11..11.5
+        "......CCCCCCCCCCCCCCCCCCCCCCCCCCC....",  # y 11..11.5
         "......CCCCCCCCCCCCCCCCCCCCCCCCCCC....",  # y 10.5..11
-        "......CCCCCCCCCCCCCCCCCCCCCCCCCCCB...",  # y 10..10.5
+        "......CCCCCCCCCCCCCCCCCCCCCCCCCCCC...",  # y 10..10.5
         ".......CCCCCCCCCCCCCCCCCCCCCCCCCCC...",  # y 9.5..10
-        ".......CCCCCCCCCCCCCCCCCCCCCCCCCCCB..",  # y 9..9.5
+        ".......CCCCCCCCCCCCCCCCCCCCCCCCCCCC..",  # y 9..9.5
         ".............CCCCCCCCCCCCCCCCCCCCCC..",  # y 8.5..9
-        ".............CCCCCCCCCCCCCCCCCCCCCCB.",  # y 8..8.5
+        ".............CCCCCCCCCCCCCCCCCCCCCCC.",  # y 8..8.5
         ".............CCCCCCCCCCCCCCCCCCCCCCC.",  # y 7.5..8
         "..............CCCCCCCCCCCCCCCCCCCCCC.",  # y 7..7.5
-        ".......................CCCCCCCCCCCCCB",  # y 6.5..7  (ear z 7..10 bare)
+        ".......................CCCCCCCCCCCCCC",  # y 6.5..7  (ear z 7..10 bare)
         ".......................CCCCCCCCCCCC..",  # y 6..6.5
-        ".......................CCCCCCCCCCCCB.",  # y 5.5..6
+        ".......................CCCCCCCCCCCCC.",  # y 5.5..6
         ".......................CCCCCCCCCCC...",  # y 5..5.5
         ".......................CCCCCCCCCCC...",  # y 4.5..5
-        ".......................CCCCCCCCCCB...",  # y 4..4.5
+        ".......................CCCCCCCCCCC...",  # y 4..4.5
         ".....................CCCCCCCCCCCC....",  # y 3.5..4
         ".......................CCCCCCCCC.....",  # y 3..3.5
-        ".........................CCCCCCCB....",  # y 2.5..3
+        ".........................CCCCCCCC....",  # y 2.5..3
         "..........................CCCCC......",  # y 2..2.5
         "...........................CCC.......",  # y 1.5..2
     ],

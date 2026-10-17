@@ -31,13 +31,16 @@ Pure numpy, importable without Blender. Two builders, both returning a :class:`M
   as is: for every mesh edge shared by exactly two quads with different normals (a convex or
   concave 90 degree edge) take each quad's *extent* away from the edge: the number of consecutive
   voxels, starting at the quad's own voxel inclusive, whose face with the same normal is exposed
-  (the flat face continues). The edge is a *step* when either extent == 1 (the tread or the riser
-  next to it is one voxel deep). Then group the step edges into *runs*: consecutive unit edges on
-  the same straight line, between faces of the same two normals; a step edge is kept only when its
-  run is at least ``min_run`` voxels long (default 2), so a lone one-voxel bump or pit stays a cube
-  instead of becoming a diamond "pimple" (``min_run=1`` = every step). Kept edges get weight 1,
-  all others 0; a Bevel of 0.5 voxel, 1 segment, limited by weight, makes the slopes
-  (``voxgen.blender.render_styles`` style ``facet``; ``facet_all`` weights every 90 degree edge).
+  (the flat face continues). The edge is a *step* when either extent == ``step`` (default 1: the
+  tread or the riser next to it is one voxel deep; ``step=2`` for a model drawn at 1/2 U on a
+  1/4 U grid, whose 45 degree slopes are staircases of 2-voxel treads and risers). Then group the
+  step edges into *runs*: consecutive unit edges on the same straight line, between faces of the
+  same two normals; a step edge is kept only when its run is at least ``min_run`` voxels long
+  (default 2), so a lone one-voxel bump or pit stays a cube instead of becoming a diamond
+  "pimple" (``min_run=1`` = every step). Kept edges get weight 1, all others 0; a Bevel of
+  0.5 * ``step`` voxel, 1 segment, limited by weight, makes the slopes
+  (``voxgen.blender.render_styles`` style ``facet``, ``--facet-step``; ``facet_all`` weights
+  every 90 degree edge).
 
 Coordinates: positions are metres in the part's local space (Godot axes, Y up, -Z forward):
 ``origin + corner * voxel_size`` where voxel (x, y, z) occupies ``[x, x+1] x [y, y+1] x [z, z+1]``.
@@ -517,10 +520,13 @@ def _face_extents(solid: np.ndarray) -> dict:
     return out
 
 
-def step_edge_weights(m: Mesh, part, mode: str = "steps", min_run: int = 2) -> EdgeWeights:
+def step_edge_weights(m: Mesh, part, mode: str = "steps", min_run: int = 2, step: int = 1) -> EdgeWeights:
     """Chamfer weights for the edges of a :func:`culled_quads` mesh of ``part`` (see the module
     docstring for the rule). ``mode``: ``"steps"`` (the rule, with ``min_run``) or ``"all"`` (every
-    90 degree edge)."""
+    90 degree edge); ``step``: the tread / riser depth in voxels that counts as a step (1, or 2 for
+    a model drawn in 2-voxel steps)."""
+    if step < 1:
+        raise ValueError(f"step must be >= 1, not {step}")
     N = len(m.positions)
     if m.n_faces == 0:
         return EdgeWeights(np.zeros((0, 2), np.int32), np.zeros(0, np.float32),
@@ -565,12 +571,12 @@ def step_edge_weights(m: Mesh, part, mode: str = "steps", min_run: int = 2) -> E
     fa, fb = fidx[ia], fidx[ib]
     different = (a[fa] != a[fb]) | (s[fa] != s[fb])
     if mode == "all":
-        step = different
+        is_step = different
     else:
-        step = different & ((ext[fa, side[ia]] == 1) | (ext[fb, side[ib]] == 1))
-        if min_run > 1 and step.any():
+        is_step = different & ((ext[fa, side[ia]] == step) | (ext[fb, side[ib]] == step))
+        if min_run > 1 and is_step.any():
             # runs: consecutive unit edges on one line between faces of the same two normals
-            si = np.flatnonzero(step)
+            si = np.flatnonzero(is_step)
             v0, v1 = e0.ravel()[ia[si]], e1.ravel()[ia[si]]
             p0, p1 = P[v0], P[v1]
             d = np.argmax(np.abs(p1 - p0), axis=1)        # edge direction axis
@@ -588,10 +594,10 @@ def step_edge_weights(m: Mesh, part, mode: str = "steps", min_run: int = 2) -> E
             run_len = np.bincount(run_id)[run_id]
             keep = np.empty(len(o), bool)
             keep[o] = run_len >= min_run
-            step[si[~keep]] = False
+            is_step[si[~keep]] = False
     w = np.zeros(len(uniq), np.float32)
-    w[np.flatnonzero(two)[step]] = 1.0
+    w[np.flatnonzero(two)[is_step]] = 1.0
     edges = np.stack([uniq // N, uniq % N], 1).astype(np.int32)
-    stats = {"edges": int(len(uniq)), "edges_90": int(different.sum()), "edges_step": int(step.sum()),
+    stats = {"edges": int(len(uniq)), "edges_90": int(different.sum()), "edges_step": int(is_step.sum()),
              "edges_nonmanifold": int((~two).sum())}
     return EdgeWeights(edges, w, stats)

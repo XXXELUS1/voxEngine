@@ -16,6 +16,9 @@ Format (consumed by ``voxgen.sheethead``): every layer is a dict with
   paint    char -> colour name: the char recolours the surface voxels of the already placed solid
            instead of adding anything (used for skin shades and the eye recess);
   recess   char -> depth in U cut into the existing solid before painting (eyes);
+  shell    char -> thickness in U: the cell is filled with the dilation of the solid already placed
+           (the skull) by that thickness, only where nothing is solid yet, within the cell's footprint
+           (all depths): a layer that hugs whatever shape is under it (beard);
   palette  {colour name: weight} for the seeded per-block colouring of the added voxels;
   block    edge of the colour lattice in U (one colour per lattice cell);
   material voxgen material name for the added voxels.
@@ -34,24 +37,27 @@ COLOURS = {
 }
 
 # Skull + neck as a PROFILE width map (1/2 U cells): columns z -2.5..14, rows y 13.5 -> -3.
-# Half-width codes: 1=1 A=1.5 2=2 B=2.5 3=3 C=3.5 4=4 D=4.5 5=5. The face is 8 wide (4) at the cheek
-# plane z 0, the sides 10 wide (5), the back rounded in 1/2 U steps, the forehead slopes back from
-# the brow to the hairline, the nose (x +-1) is a 45-degree wedge from the bridge down to a 2 U cube
-# 2 U proud, the chin is 1/2 U proud and 6 wide, the jaw bottom runs from the chin back and up to the
-# jaw angle under the ear, the neck is a 5 x 6.5 U column. Ears: |x| 5..5.5, z 5..8, y 4..7 (engine).
+# Half-width codes: 1=1 A=1.5 2=2 B=2.5 3=3 C=3.5 4=4 D=4.5 5=5. After docs/reference/bald-head-
+# turnaround.png: the face is 8 wide (4) at the cheek plane z 0 and the sides 10 wide (5) from the
+# brow down to the cheekbones; the crown is a dome (rows narrow in z and x above y 11); the back is
+# rounded in 1/2 U steps and curves into the neck (occiput); the forehead slopes back from the brow
+# to the hairline; the nose (x +-1) is a 45-degree wedge from the bridge down to a 2 U cube 2 U
+# proud; below the cheekbones the jaw tapers (mouth rows 8 wide, chin 5..6 wide, 1/2 U proud) and
+# its bottom runs from the chin back and UP to the jaw angle under the ear; the neck (5 wide,
+# z 5.5..11.5) stands under the ear. Ears: |x| 5..6, z 7..10, y 4..7 with a 1 U notch (engine).
 SKULL = dict(
     view="profile", cell=0.5, origin=(-2.5, 13.5), material="MAT_SKIN", colour="skin",
     width={"1": 1.0, "A": 1.5, "2": 2.0, "B": 2.5, "3": 3.0, "C": 3.5, "4": 4.0, "D": 4.5, "5": 5.0},
     rows=[
-        "............333333333333.........",  # y 13..13.5
-        "...........3C444444444C3B2.......",  # y 12.5..13
-        "..........C4DDDDDDDDDDD4C3B......",  # y 12..12.5
-        ".........4D5555555555555D4C3.....",  # y 11.5..12
-        "........4D555555555555555D4C3....",  # y 11..11.5
-        "........4D5555555555555555D4C3...",  # y 10.5..11
-        ".......4D55555555555555555D4C3...",  # y 10..10.5
+        ".............2222222222..........",  # y 13..13.5
+        "...........3CCCCCCCCCC3B2A.......",  # y 12.5..13
+        "..........C4444444444444C3B2.....",  # y 12..12.5
+        ".........4DDDDDDDDDDDDDDD4C3B....",  # y 11.5..12
+        "........4D5555555555555555D4C3...",  # y 11..11.5
+        ".......4D555555555555555555D4C3..",  # y 10.5..11
+        ".......4D555555555555555555D4C3..",  # y 10..10.5
         "......4D5555555555555555555D4C3..",  # y 9.5..10
-        ".....4D55555555555555555555D4C3..",  # y 9..9.5
+        "......4D5555555555555555555D4C3..",  # y 9..9.5
         ".....4D55555555555555555555D4C3..",  # y 8.5..9
         ".....4D55555555555555555555D4C3..",  # y 8..8.5
         "....14D55555555555555555555D4C3..",  # y 7.5..8
@@ -62,20 +68,20 @@ SKULL = dict(
         ".11114D55555555555555555555D4C3..",  # y 5..5.5
         ".11114D55555555555555555555D4C3..",  # y 4.5..5
         ".....4D55555555555555555555D4C3..",  # y 4..4.5
-        ".....4D55555555555555555555D4C3..",  # y 3.5..4
-        ".....4D555555555555555555D4C3....",  # y 3..3.5
-        ".....4D5555555555555555D4C3......",  # y 2.5..3
-        "....3C4DDDDDDDDDDDDDDDDDB........",  # y 2..2.5
-        "....3C4DDDDDDDDDDDDDDBBBB........",  # y 1.5..2
-        "....3C4DDDDDDDDDDDBBBBBBB........",  # y 1..1.5
-        "....33C44444444BBBBBBBBBB........",  # y 0.5..1
-        "....33C44444BBBBBBBBBBBBB........",  # y 0..0.5
-        "............BBBBBBBBBBBBB........",  # y -0.5..0
-        "............BBBBBBBBBBBBB........",  # y -1..-0.5
-        "............BBBBBBBBBBBBB........",  # y -1.5..-1
-        "............BBBBBBBBBBBBB........",  # y -2..-1.5
-        "............BBBBBBBBBBBBB........",  # y -2.5..-2
-        "............BBBBBBBBBBBBB........",  # y -3..-2.5
+        ".....4DDDDDDDDDDDDDDDDDDDDD4C3B..",  # y 3.5..4
+        ".....4DDDDDDDDDDDDDDDDDDDD4C3B...",  # y 3..3.5
+        ".....C4DDDDDDDDDDDDDDDDDD4C3B....",  # y 2.5..3
+        "....B3C444444444444444444444.....",  # y 2..2.5
+        "....B3CCCCCCCCCCCCCCCCCCCBBB.....",  # y 1.5..2
+        "....BB3333333333333333BBBBBB.....",  # y 1..1.5
+        ".....B3333333333333BBBBBBBBB.....",  # y 0.5..1
+        ".....2BBBBBBBBBBBBBBBBBBBBBB.....",  # y 0..0.5
+        "................BBBBBBBBBBBB.....",  # y -0.5..0
+        "................BBBBBBBBBBBB.....",  # y -1..-0.5
+        "................BBBBBBBBBBBB.....",  # y -1.5..-1
+        "................BBBBBBBBBBBB.....",  # y -2..-1.5
+        "................BBBBBBBBBBBB.....",  # y -2.5..-2
+        "................BBBBBBBBBBBB.....",  # y -3..-2.5
     ],
 )
 
@@ -133,12 +139,13 @@ FACE = dict(
     ],
 )
 
-# Beard: 1/2 U cells, left half (x -5.5..0), rows y 4 -> -1.
-# '#' on the face (z -1..0: 1/2 U in front of the proud chin, 1 U on the cheeks); '>' side strip /
-# chamfer filler (z -0.75..3, only outside the skull); '=' under the chin (z -0.75..2).
+# Beard: 1/2 U cells, left half (x -5.5..0), rows y 4 -> -1. Shell codes: the cell is filled with
+# a shell grown from the skull already placed (dilation by the given thickness, only outside it),
+# so the beard hugs the tapered jaw: '#' 0.75 U (chin and cheeks), '>' 0.5 U (sides), '=' 0.75 U
+# under the chin (grows down from the jaw bottom).
 BEARD = dict(
     view="front", cell=0.5, origin=(-5.5, 4.0), mirror=True, material="MAT_HAIR",
-    depth={"#": (-1.0, 0.0), ">": (-0.75, 3.0), "=": (-0.75, 2.0)},
+    shell={"#": 0.75, ">": 0.5, "=": 0.75},
     palette={"hair_dark": 5, "hair_black": 3, "hair": 2}, block=1.0,
     rows=[
         "...#.......",  # y 3.5-4   beard top at the face edge
@@ -227,7 +234,7 @@ HAIR_FRONT = dict(
 
 # Hair, side map (profile): 1/2 U cells, columns z -1.5..17 (37 cols), rows y 12 -> 1.5. Letters give
 # the x extent: C -5.5..5.5 (a 1/2 U shell on the skull's sides and the mass behind it, z 13..16.5),
-# B -6..6 (wider nape clumps). The ear (z 5..8, y 4..7) and the cheek side in front of it stay bare.
+# B -6..6 (wider nape clumps). The ear (z 7..10, y 4..7) and the cheek side in front of it stay bare.
 HAIR_SIDE = dict(
     view="side", cell=0.5, origin=(-1.5, 12.0), mirror=False, material="MAT_HAIR",
     depth={"C": (-5.5, 5.5), "B": (-6.0, 6.0)},
@@ -243,12 +250,12 @@ HAIR_SIDE = dict(
         ".............CCCCCCCCCCCCCCCCCCCCCCB.",  # y 8..8.5
         ".............CCCCCCCCCCCCCCCCCCCCCCC.",  # y 7.5..8
         "..............CCCCCCCCCCCCCCCCCCCCCC.",  # y 7..7.5
-        "...................CCCCCCCCCCCCCCCCCB",  # y 6.5..7
-        "...................CCCCCCCCCCCCCCCC..",  # y 6..6.5
-        "...................CCCCCCCCCCCCCCCCB.",  # y 5.5..6
-        "...................CCCCCCCCCCCCCCC...",  # y 5..5.5
-        "...................CCCCCCCCCCCCCCC...",  # y 4.5..5
-        "...................CCCCCCCCCCCCCCB...",  # y 4..4.5
+        ".......................CCCCCCCCCCCCCB",  # y 6.5..7  (ear z 7..10 bare)
+        ".......................CCCCCCCCCCCC..",  # y 6..6.5
+        ".......................CCCCCCCCCCCCB.",  # y 5.5..6
+        ".......................CCCCCCCCCCC...",  # y 5..5.5
+        ".......................CCCCCCCCCCC...",  # y 4.5..5
+        ".......................CCCCCCCCCCB...",  # y 4..4.5
         ".....................CCCCCCCCCCCC....",  # y 3.5..4
         ".......................CCCCCCCCC.....",  # y 3..3.5
         ".........................CCCCCCCB....",  # y 2.5..3
@@ -293,5 +300,6 @@ for _name, _layer in LAYERS:
     _w = {len(r) for r in _layer["rows"]}
     assert len(_w) == 1, f"{_name}: ragged rows {_w}"
     _chars = set("".join(_layer["rows"])) - {"."}
-    _known = set(_layer.get("depth", {})) | set(_layer.get("paint", {})) | set(_layer.get("width", {}))
+    _known = (set(_layer.get("depth", {})) | set(_layer.get("paint", {})) | set(_layer.get("width", {}))
+              | set(_layer.get("shell", {})))
     assert _chars <= _known, f"{_name}: unknown chars {_chars - _known}"

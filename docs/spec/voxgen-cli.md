@@ -24,10 +24,10 @@ voxgen check <file.vxm>                 печатает отчёт провер
 voxgen import-vox <file.vox> --spec-json <file.vox.json> --out <file.vxm>
 voxgen info <file.vxm>                  части, размеры, число вокселей, материалы
 voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,clay,toon,mix]
-              [--light studio|candle] [--views three_quarter,front,profile,full] [--size 640] [--samples 96]
+              [--light studio|candle] [--views three_quarter,front,profile,back,full] [--size 640] [--samples 96]
               [--bg dark|grey|light] [--part-styles head=smooth,hair=facet] [--smooth-passes 2]
               [--smooth-clamp cell|free] [--smooth-inflate 0] [--no-hermite] [--hermite-passes 0]
-              [--out build/renders/<name>/] [--cubic-materials 5,8] [--jitter 0] [--save-blend]
+              [--out build/renders/<name>/] [--cubic-materials 5,8] [--jitter 0] [--facet-step 1] [--save-blend]
     Красивые рендеры в Blender (bpy как python-модуль, venv из scripts/install_blender.sh:
     $VOXENGINE_BPY или ~/.cache/voxengine/venv-bpy; без него — понятная ошибка с командой установки).
     Для спека .py сначала собирает .vxm в godot/assets/models (без проверок). На каждую пару
@@ -38,7 +38,8 @@ voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,c
     Стили: cubes (culled quads + AO), bevel (кубы + Bevel), facet (кубы, у которых одновоксельные
     ступеньки скошены под 45°: `mesh.step_edge_weights`, правило в докстринге модуля, `min_run=2` —
     одиночный бугорок остаётся кубом; один плоский материал на цвет палитры, чтобы фаски не смешивали
-    цвета; `--jitter` по умолчанию 0), facet_all (скошено каждое ребро 90°), smooth (surface nets,
+    цвета; `--jitter` по умолчанию 0; `--facet-step N` — ступенькой считается уступ глубиной N вокселей,
+    фаска 0.5·N воксела: 2 для моделей, нарисованных шагом 1/2 U на сетке 1/4 U), facet_all (скошено каждое ребро 90°), smooth (surface nets,
     цвет по вокселю), clay (smooth + подповерхностное + «отпечатки»), toon (EEVEE, 3-ступенчатая рампа
     + Freestyle); фон `--bg`: dark, grey, light (тёплый светло-серый мир и пол, экспозиция −0.7);
     в smooth-стилях волосы и зубы по умолчанию — часть гладкой поверхности; `--cubic-materials 5,8`
@@ -59,7 +60,7 @@ voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]   пересоб�
 ```
 
 Мешеры `voxgen.mesh` (чистый numpy, без Blender): `culled_quads(part, palette, jitter, ao)`,
-`step_edge_weights(mesh, part, mode='steps'|'all', min_run=2)` (веса фасок для `facet`) и
+`step_edge_weights(mesh, part, mode='steps'|'all', min_run=2, step=1)` (веса фасок для `facet`) и
 `surface_nets(part, palette, smooth_passes, keep_cubic_materials=(), clamp='cell'|'free', inflate=0,
 hermite=None, hermite_passes=0)` (`hermite=None` — Hermite-режим, если у части есть поле `sdf`) →
 `Mesh` (positions float32 (N,3) в

@@ -8,11 +8,11 @@
     voxgen import-vox <file.vox> --spec-json <file.vox.json> --out <file.vxm>
     voxgen info <file.vxm>
     voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,clay,toon,mix]
-                  [--light studio|candle] [--views three_quarter,front,profile,full] [--size 640]
+                  [--light studio|candle] [--views three_quarter,front,profile,back,full] [--size 640]
                   [--samples 96] [--bg dark|grey|light] [--part-styles head=smooth,hair=facet]
                   [--smooth-passes 2] [--smooth-clamp cell|free] [--smooth-inflate 0] [--no-hermite]
                   [--hermite-passes 0] [--out build/renders/<name>/] [--cubic-materials 5,8] [--jitter 0]
-                  [--save-blend]
+                  [--facet-step 1] [--save-blend]
     voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]
 
 Exit code 1 when checks report errors (build, build-all, check) or on failure.
@@ -359,6 +359,8 @@ def cmd_render(args) -> int:
             cmd += ["--jitter", str(args.jitter)]
         if args.part_styles:
             cmd += ["--part-styles", args.part_styles]
+        if args.facet_step != 1:
+            cmd += ["--facet-step", str(args.facet_step)]
         cmd += ["--smooth-passes", str(args.smooth_passes), "--smooth-clamp", args.smooth_clamp,
                 "--smooth-inflate", str(args.smooth_inflate), "--hermite-passes", str(args.hermite_passes)]
         if args.no_hermite:
@@ -471,6 +473,9 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--part-styles", default="",
                    help="per-part style overrides, part=style comma list (styles: " + ",".join(PART_STYLES) + "); "
                         "style mix = skin parts smooth, the rest facet")
+    p.add_argument("--facet-step", type=int, default=1,
+                   help="facet styles: tread/riser depth in voxels that counts as a step, chamfer 0.5*N voxel "
+                        "(default 1; 2 for models drawn in 2-voxel steps)")
     p.add_argument("--smooth-passes", type=int, default=2, help="Laplacian passes of the smooth parts (default 2)")
     p.add_argument("--smooth-clamp", default="cell", choices=SMOOTH_CLAMPS,
                    help="surface-nets clamp: cell (vertices stay in their cell, default) or free (volume restored)")

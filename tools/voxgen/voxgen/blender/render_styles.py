@@ -6,7 +6,8 @@ per run; ``voxgen render`` drives this as a subprocess of the bpy venv:
 
 Styles (``voxgen.blender.STYLES``): cubes (culled quads, full AO), bevel (cubes + Bevel modifier),
 facet (cubes whose one-voxel steps are chamfered to 45 degree slopes: ``mesh.step_edge_weights``
-with ``min_run=2`` + a Bevel limited by edge weight, 0.5 voxel, 1 segment), facet_all (every
+with ``min_run=2`` + a Bevel limited by edge weight, 0.5 voxel, 1 segment; ``--facet-step 2``
+for 2-voxel steps and a 1 voxel chamfer), facet_all (every
 90 degree edge chamfered), smooth (surface nets, shade smooth, per-face voxel colour, skin material:
 roughness 0.6, no bump, weak subsurface 0.1), clay (smooth + subsurface + thumb-mark bumps), toon
 (EEVEE, 3-step ramp + Freestyle outline), mix (per part: skin parts smooth, the rest facet, see
@@ -295,7 +296,8 @@ def assign_palette_materials(ob, m: mesh.Mesh, cache: dict):
 
 def add_chamfer(ob, ew: mesh.EdgeWeights, width_m: float):
     """Bevel modifier limited by the per-edge weights of ``mesh.step_edge_weights``: one flat segment
-    of ``width_m`` (0.5 voxel) turns every weighted 90 degree edge into an exact 45 degree slope."""
+    of ``width_m`` (0.5 voxel per step voxel) turns every weighted 90 degree edge into an exact 45
+    degree slope."""
     me = ob.data
     ev = np.zeros(len(me.edges) * 2, np.int64)
     me.edges.foreach_get("vertices", ev)
@@ -500,15 +502,17 @@ def setup_render(engine, size, samples, out_path, freestyle=False, exposure=-0.2
 
 
 # ----------------------------------------------------------------------------- main
-def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float | None = None, smooth=None):
+def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float | None = None, smooth=None,
+                   facet_step: int = 1):
     """One mesh object per part (each at its own origin), meshed by its own style (``part_styles``:
     part name -> style). Returns (objects, styles per object, bbox_min, bbox_max, faces, chamfer
     stats). ``cubic_materials``: material ids rendered as cubes inside the smooth styles; ``jitter``:
     the per-voxel colour jitter of the cube mesher (None = the style's default: 0 for the facet
     styles, 0.06 otherwise; 0 = flat palette colours, the stylized look); ``smooth``: the
     ``SMOOTH_DEFAULTS`` dict (passes, clamp, inflate, hermite, hermite_passes) of
-    ``mesh.surface_nets``. The facet parts get their per-colour materials and the weighted Chamfer
-    bevel here. Returns (objects, styles per object, bbox_min, bbox_max, faces, chamfer stats,
+    ``mesh.surface_nets``; ``facet_step``: the tread depth in voxels that counts as a step for the
+    facet styles (``mesh.step_edge_weights``), the chamfer being 0.5 * facet_step voxel wide. The
+    facet parts get their per-colour materials and the weighted Chamfer bevel here. Returns (objects, styles per object, bbox_min, bbox_max, faces, chamfer stats,
     hermite part names)."""
     smooth = {**SMOOTH_DEFAULTS, **(smooth or {})}
     objs, styles, faces = [], [], 0
@@ -537,8 +541,9 @@ def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float |
         faces += m.n_faces
         if style in FACET_STYLES:
             assign_palette_materials(ob, m, mat_cache)
-            ew = mesh.step_edge_weights(m, part, mode="all" if style == "facet_all" else "steps", min_run=2)
-            add_chamfer(ob, ew, 0.5 * part.voxel_size)
+            ew = mesh.step_edge_weights(m, part, mode="all" if style == "facet_all" else "steps", min_run=2,
+                                        step=int(facet_step))
+            add_chamfer(ob, ew, 0.5 * facet_step * part.voxel_size)
             for key, val in ew.stats.items():
                 chamfer[key] = chamfer.get(key, 0) + val
         p = godot_to_blender(m.positions)
@@ -599,9 +604,11 @@ def assign_materials(objs, styles, voxel_size: float):
 
 
 def render_one(model_path, style, light, view, size, samples, out, bg="dark", engine=None, save_blend=None,
-               index=None, cubic_materials=(), jitter: float | None = None, part_styles=None, smooth=None) -> dict:
+               index=None, cubic_materials=(), jitter: float | None = None, part_styles=None, smooth=None,
+               facet_step: int = 1) -> dict:
     """``part_styles``: {part name: style} overrides on top of ``style`` (``mix`` maps skin parts to
-    smooth and the rest to facet); ``smooth``: surface-nets options, see ``SMOOTH_DEFAULTS``."""
+    smooth and the rest to facet); ``smooth``: surface-nets options, see ``SMOOTH_DEFAULTS``;
+    ``facet_step``: step depth in voxels of the facet chamfer (see ``build_geometry``)."""
     model = io_vxm.read(model_path)
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
@@ -615,7 +622,7 @@ def render_one(model_path, style, light, view, size, samples, out, bg="dark", en
         smooth["jitter"] = jitter  # flat palette colours on the smooth skin too (the stylized look)
     mapping = resolve_part_styles(model, style, part_styles)
     objs, styles, bmin, bmax, faces, chamfer, hermite_parts = build_geometry(model, mapping, cubic_materials, jitter,
-                                                                             smooth)
+                                                                             smooth, facet_step)
     size_m = bmax - bmin
     center = (bmin + bmax) / 2
     assign_materials(objs, styles, model.parts[0].voxel_size)
@@ -659,7 +666,7 @@ def render_one(model_path, style, light, view, size, samples, out, bg="dark", en
         "dims": "x".join(str(v) for v in (p0.nx, p0.ny, p0.nz)) + ("+" if len(model.parts) > 1 else ""),
         "voxel_mm": round(p0.voxel_size * 1000, 2), "blender": bpy.app.version_string, "out": out,
         "cubic_materials": [int(v) for v in cubic_materials], "jitter": jitter,
-        "exposure": EXPOSURES[bg], "chamfer": chamfer,
+        "exposure": EXPOSURES[bg], "chamfer": chamfer, "facet_step": int(facet_step),
     }
     if index is not None:
         info["index"] = index
@@ -686,6 +693,8 @@ def main(argv=None) -> int:
     ap.add_argument("--jitter", type=float, default=None,
                     help="per-voxel colour jitter of the cube mesher (default 0.06, facet/mix styles 0; 0 = none)")
     ap.add_argument("--part-styles", default="", help="per-part overrides, e.g. head=smooth,hair=facet")
+    ap.add_argument("--facet-step", type=int, default=1,
+                    help="tread depth in voxels that counts as a step for facet (chamfer 0.5*N voxel; default 1)")
     ap.add_argument("--smooth-passes", type=int, default=SMOOTH_DEFAULTS["passes"],
                     help="Laplacian passes of the smooth parts (default 2)")
     ap.add_argument("--smooth-clamp", default=SMOOTH_DEFAULTS["clamp"], choices=SMOOTH_CLAMPS,
@@ -703,7 +712,7 @@ def main(argv=None) -> int:
     info = render_one(args.model, args.style, args.light, args.view, args.size, args.samples, args.out,
                       bg=args.bg, engine=args.engine, save_blend=args.save_blend, index=args.index,
                       cubic_materials=cubic, jitter=args.jitter, part_styles=parse_part_styles(args.part_styles),
-                      smooth=smooth)
+                      smooth=smooth, facet_step=args.facet_step)
     print("RENDER_INFO " + json.dumps(info), flush=True)
     return 0
 

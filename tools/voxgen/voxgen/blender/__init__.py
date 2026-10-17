@@ -8,6 +8,8 @@ Styles are per model, ``mix`` is per part: every part whose exposed surface is m
 (``SKIN_MATERIALS``: skin + cartilage) is rendered ``smooth`` (surface nets, shade smooth, per-face
 voxel colours) and every other part (hair, eyes, shades, teeth) ``facet``. ``--part-styles
 "head=smooth,hair=facet"`` overrides the mapping of any style (part name -> one of ``PART_STYLES``).
+A smooth part with the ``sdf`` field is meshed by Hermite surface nets (the exact surface, label
+"nets hermite"); without it the Laplacian-smoothed binary nets ("nets cell x2") are used.
 """
 from __future__ import annotations
 

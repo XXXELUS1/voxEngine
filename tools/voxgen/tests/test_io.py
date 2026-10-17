@@ -4,7 +4,7 @@ import struct
 import numpy as np
 
 from helpers import layered_ball
-from voxgen import io_vox, io_vxm
+from voxgen import io_vox, io_vxm, sdfield
 from voxgen.materials import MAT_HAIR, MAT_SKIN
 
 
@@ -50,6 +50,39 @@ def test_vxm_unknown_field_is_skipped(tmp_path):
     back = io_vxm.from_bytes(new)
     assert np.array_equal(back.parts[0].material, part.material)
     assert np.array_equal(back.parts[0].color, part.color)
+    # the unknown field is kept as raw bytes (written after the standard ones), so nothing is lost
+    assert back.parts[0].fields == ["material", "color", "state", "extra"]
+    assert back.parts[0].extra["extra"].dtype == np.uint8 and not back.parts[0].extra["extra"].any()
+    assert io_vxm.to_bytes(back)[-4 * n:] == fields + bytes(n)
+
+
+def test_vxm_sdf_field_roundtrip(tmp_path):
+    model, part = layered_ball(n=12, r=0.025)
+    assert part.sdf is None and part.fields == ["material", "color", "state"]
+    sdfield.add_distance_field(part)
+    assert part.fields == ["material", "color", "state", "sdf"] and part.sdf.dtype == np.int8
+    assert sdfield.is_consistent(part.sdf, part.solid())
+    path = tmp_path / "ball.vxm"
+    io_vxm.write(model, path)
+    raw = path.read_bytes()
+    (hlen,) = struct.unpack("<I", raw[4:8])
+    header = json.loads(raw[8:8 + hlen])
+    assert header["parts"][0]["fields"] == ["material", "color", "state", "sdf"]
+    n = 12 ** 3
+    assert len(raw) - 8 - hlen == 4 * n
+    assert np.frombuffer(raw[-n:], np.int8).reshape(12, 12, 12).tolist() == part.sdf.tolist()
+    back = io_vxm.read(path)
+    assert back.parts[0].sdf.dtype == np.int8 and np.array_equal(back.parts[0].sdf, part.sdf)
+    assert io_vxm.to_bytes(back) == raw
+    # paint / clear keep the field consistent; copy keeps it; dropping it works
+    c = part.copy()
+    assert np.array_equal(c.sdf, part.sdf)
+    c.clear(np.abs(c.coords()[1]) < 0.004)
+    assert sdfield.is_consistent(c.sdf, c.solid()) and c.count_solid() < part.count_solid()
+    c.paint(np.abs(c.coords()[1]) < 0.004, MAT_SKIN, 1)
+    assert sdfield.is_consistent(c.sdf, c.solid())
+    c.sdf = None
+    assert c.fields == ["material", "color", "state"]
 
 
 def test_vox_roundtrip_colours_and_materials(tmp_path):

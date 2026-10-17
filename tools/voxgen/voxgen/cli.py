@@ -1,7 +1,8 @@
 """Command line interface (docs/spec/voxgen-cli.md).
 
-    voxgen build <spec.py> [--out DIR] [--preview DIR] [--vox DIR] [--report DIR] [--no-check] [--size N]
+    voxgen build <spec.py> [--out DIR] [--preview DIR] [--vox DIR] [--report DIR] [--no-check] [--size N] [--sdf]
     voxgen build-all [specs-dir] [same options]
+    voxgen sdf <file.vxm> [--out <file.vxm>] [--force] [--no-blur]
     voxgen preview <file.vxm> [--out x.png] [--views a,b,c] [--size 256]
     voxgen check <file.vxm>
     voxgen import-vox <file.vox> --spec-json <file.vox.json> --out <file.vxm>
@@ -9,8 +10,9 @@
     voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,clay,toon,mix]
                   [--light studio|candle] [--views three_quarter,front,profile,full] [--size 640]
                   [--samples 96] [--bg dark|grey|light] [--part-styles head=smooth,hair=facet]
-                  [--smooth-passes 2] [--smooth-clamp cell|free] [--smooth-inflate 0]
-                  [--out build/renders/<name>/] [--cubic-materials 5,8] [--jitter 0] [--save-blend]
+                  [--smooth-passes 2] [--smooth-clamp cell|free] [--smooth-inflate 0] [--no-hermite]
+                  [--hermite-passes 0] [--out build/renders/<name>/] [--cubic-materials 5,8] [--jitter 0]
+                  [--save-blend]
     voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]
 
 Exit code 1 when checks report errors (build, build-all, check) or on failure.
@@ -28,7 +30,7 @@ import time
 import traceback
 from pathlib import Path
 
-from . import __version__, checks, io_vox, io_vxm
+from . import __version__, checks, io_vox, io_vxm, sdfield
 from . import materials as M
 from .blender import BACKGROUNDS, LIGHTS, PART_STYLES, SMOOTH_CLAMPS, STYLES, VIEWS, parse_part_styles
 from .model import Model
@@ -98,12 +100,16 @@ def find_specs(root) -> list[Path]:
 # ---------------------------------------------------------------------------
 
 def build_one(spec_path, out_dir, preview_dir, vox_dir, report_dir, check: bool = True, size: int = 256,
-              quiet: bool = False) -> tuple[Model, dict]:
-    """Build one spec: write .vxm, .vox(+.json), preview .png and report .json.
+              quiet: bool = False, add_sdf: bool = False) -> tuple[Model, dict]:
+    """Build one spec: write .vxm, .vox(+.json), preview .png and report .json. ``add_sdf`` gives
+    every part without the ``sdf`` field one from its binary solid (``sdfield.distance_field``).
     Returns ``(model, report)``; report["errors"] is empty when the model is fine."""
     spec_path = Path(spec_path)
     t0 = time.perf_counter()
     model = load_spec(spec_path)
+    if add_sdf:
+        for part in model.parts:
+            sdfield.add_distance_field(part)
     t_build = time.perf_counter() - t0
     try:
         spec_rel = str(spec_path.resolve().relative_to(Path.cwd().resolve()))
@@ -156,7 +162,7 @@ def build_one(spec_path, out_dir, preview_dir, vox_dir, report_dir, check: bool 
 def cmd_build(args) -> int:
     try:
         _, report = build_one(args.spec, args.out, args.preview, args.vox, args.report,
-                              check=not args.no_check, size=args.size)
+                              check=not args.no_check, size=args.size, add_sdf=args.sdf)
     except Exception:
         traceback.print_exc()
         return 1
@@ -177,7 +183,7 @@ def cmd_build_all(args) -> int:
     for sp in specs:
         try:
             model, report = build_one(sp, args.out, args.preview, args.vox, args.report,
-                                      check=not args.no_check, size=args.size)
+                                      check=not args.no_check, size=args.size, add_sdf=args.sdf)
             rows.append((sp, model.name, len(report["errors"]), len(report["warnings"])))
             if report["errors"]:
                 failed.append(sp)
@@ -237,6 +243,21 @@ def cmd_check(args) -> int:
     return 1 if report["errors"] else 0
 
 
+def cmd_sdf(args) -> int:
+    """Add the ``sdf`` field (signed distance of the binary solid) to every part of a .vxm."""
+    model = _load_any(args.file)
+    out = Path(args.out) if args.out else Path(args.file)
+    done = []
+    for part in model.parts:
+        if sdfield.add_distance_field(part, force=args.force, blur=not args.no_blur):
+            done.append(part.name)
+    io_vxm.write(model, out, spec=model.meta.get("spec"))
+    skipped = [p.name for p in model.parts if p.name not in done]
+    print(f"{out}: sdf field written for {', '.join(done) or 'no part'}"
+          + (f"; already present (use --force): {', '.join(skipped)}" if skipped else ""))
+    return 0
+
+
 def cmd_info(args) -> int:
     model = _load_any(args.file)
     print(f"model: {model.name}")
@@ -249,7 +270,8 @@ def cmd_info(args) -> int:
         bb = p.bbox()
         print(f"part {p.name!r} (bone {p.bone!r}): dims {p.nx}x{p.ny}x{p.nz}, voxel {p.voxel_size * 1000:g} mm, "
               f"origin {tuple(round(v, 4) for v in p.origin)}, solid {p.count_solid():,} / {p.nx * p.ny * p.nz:,}"
-              + (f", bbox {bb[0]}..{bb[1]}" if bb else ""))
+              + (f", bbox {bb[0]}..{bb[1]}" if bb else "")
+              + (f", fields {','.join(p.fields)}" if p.extra else ""))
         for mid, c in sorted(p.material_histogram().items()):
             print(f"    {M.name_of(mid):10} ({mid:2d}): {c:,}")
         total += p.count_solid()
@@ -338,7 +360,9 @@ def cmd_render(args) -> int:
         if args.part_styles:
             cmd += ["--part-styles", args.part_styles]
         cmd += ["--smooth-passes", str(args.smooth_passes), "--smooth-clamp", args.smooth_clamp,
-                "--smooth-inflate", str(args.smooth_inflate)]
+                "--smooth-inflate", str(args.smooth_inflate), "--hermite-passes", str(args.hermite_passes)]
+        if args.no_hermite:
+            cmd += ["--no-hermite"]
         if args.save_blend:
             cmd += ["--save-blend", str(png.with_suffix(".blend").resolve())]
         t0 = time.perf_counter()
@@ -380,6 +404,8 @@ def _add_build_opts(p):
     p.add_argument("--report", default=DEFAULT_REPORT, help=f"check report dir (default {DEFAULT_REPORT})")
     p.add_argument("--no-check", action="store_true", help="skip checks")
     p.add_argument("--size", type=int, default=256, help="preview size per view in px (default 256)")
+    p.add_argument("--sdf", action="store_true",
+                   help="add the sdf field (signed distance of the binary solid) to parts that lack it")
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -415,7 +441,14 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--name", default=None, help="override the model name")
     p.set_defaults(func=cmd_import_vox)
 
-    p = sub.add_parser("info", help="print parts, dims, voxel counts and materials of a .vxm")
+    p = sub.add_parser("sdf", help="add the sdf field (signed distance of the binary solid, int8) to a .vxm")
+    p.add_argument("file", help=".vxm (or .vox / spec .py)")
+    p.add_argument("--out", default=None, help="output .vxm (default: overwrite the input)")
+    p.add_argument("--force", action="store_true", help="recompute parts that already carry the field")
+    p.add_argument("--no-blur", action="store_true", help="keep the raw stair-stepped distance (no 3x3x3 blur)")
+    p.set_defaults(func=cmd_sdf)
+
+    p = sub.add_parser("info", help="print parts, dims, voxel counts, materials and extra fields of a .vxm")
     p.add_argument("file")
     p.set_defaults(func=cmd_info)
 
@@ -443,6 +476,10 @@ def make_parser() -> argparse.ArgumentParser:
                    help="surface-nets clamp: cell (vertices stay in their cell, default) or free (volume restored)")
     p.add_argument("--smooth-inflate", type=float, default=0.0,
                    help="offset the smooth surface outward by this many voxels (0..0.5, closes seams against cubes)")
+    p.add_argument("--no-hermite", action="store_true",
+                   help="binary surface nets even for parts with the sdf field (default: Hermite nets when present)")
+    p.add_argument("--hermite-passes", type=int, default=0,
+                   help="light cell-clamped Laplacian passes on top of the Hermite crossings (default 0)")
     p.add_argument("--save-blend", action="store_true", help="also save a .blend next to each png")
     p.set_defaults(func=cmd_render)
 

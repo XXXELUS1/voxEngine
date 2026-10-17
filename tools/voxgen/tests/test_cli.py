@@ -56,6 +56,25 @@ def test_cli_subcommands_via_module(tmp_path):
     assert io_vxm.read(back).parts[0].count_solid() == io_vxm.read(vxm).parts[0].count_solid()
 
 
+def test_sdf_command_and_build_sdf(tmp_path):
+    from voxgen import sdfield
+    out = tmp_path / "models"
+    assert cli.main(["build", str(SPEC), "--out", str(out), "--preview", "", "--vox", "", "--report", "",
+                     "--no-check"]) == 0
+    vxm = out / "head_test.vxm"
+    assert io_vxm.read(vxm).parts[0].sdf is None
+    with_sdf = tmp_path / "head_sdf.vxm"
+    assert cli.main(["sdf", str(vxm), "--out", str(with_sdf)]) == 0
+    head = io_vxm.read(with_sdf).parts[0]
+    assert head.fields == ["material", "color", "state", "sdf"] and sdfield.is_consistent(head.sdf, head.solid())
+    assert io_vxm.read(vxm).parts[0].sdf is None                  # the input was left alone
+    assert cli.main(["build", str(SPEC), "--out", str(out), "--preview", "", "--vox", "", "--report", "",
+                     "--no-check", "--sdf"]) == 0
+    assert io_vxm.read(vxm).parts[0].sdf is not None
+    r = subprocess.run([sys.executable, "-m", "voxgen", "info", str(vxm)], cwd=ROOT, capture_output=True, text=True)
+    assert r.returncode == 0 and "fields material,color,state,sdf" in r.stdout
+
+
 def test_build_all_skips_underscore_specs():
     specs = cli.find_specs(ROOT / "specs")
     names = [p.name for p in specs]

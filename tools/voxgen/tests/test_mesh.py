@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 
 from helpers import layered_ball
-from voxgen import mesh
-from voxgen.materials import MAT_HAIR
+from voxgen import Part, mesh, sdf, sdfield
+from voxgen.materials import MAT_HAIR, MAT_SKIN
 
 
 def test_culled_quads_volume_equals_voxel_count():
@@ -110,3 +110,54 @@ def test_step_edge_weights_marks_steps_not_cubes_and_min_run_skips_lone_bumps():
     m = mesh.culled_quads(slab, [(200, 150, 120)], jitter=0.0)
     assert mesh.step_edge_weights(m, slab, min_run=1).weights.sum() == 12
     assert mesh.step_edge_weights(m, slab).weights.sum() == 0
+
+
+def _sphere_part(n=32, vs=0.005, r=0.0525):
+    p = Part("s", (n, n, n), vs, origin=(-n * vs / 2,) * 3)
+    f = sdf.sphere(p, (0, 0, 0), r)
+    p.material[f <= 0] = MAT_SKIN
+    return p, f
+
+
+def test_hermite_nets_recover_the_sphere_binary_nets_do_not():
+    """A sphere SDF at 5 mm: Hermite nets put every vertex within 0.15 voxel of the true radius
+    (measured 0.04), the binary path is off by up to half a voxel; the normals follow the field."""
+    p, f = _sphere_part()
+    pal = [(200, 150, 120)]
+    R = 0.0525 / p.voxel_size
+    binary = mesh.surface_nets(p, pal, smooth_passes=0)
+    assert not binary.hermite and binary.vertex_normals is None
+    err_b = np.abs(np.linalg.norm(binary.positions, axis=1) / p.voxel_size - R)
+    assert err_b.max() >= 0.45
+    with pytest.raises(ValueError):
+        mesh.surface_nets(p, pal, hermite=True)                   # no field yet
+    p.sdf = sdfield.quantize(f, p.solid())
+    assert sdfield.is_consistent(p.sdf, p.solid())
+    h = mesh.surface_nets(p, pal)                                 # hermite by default now
+    assert h.hermite and h.is_closed() and len(h.positions) == len(binary.positions)
+    err_h = np.abs(np.linalg.norm(h.positions, axis=1) / p.voxel_size - R)
+    assert err_h.max() < 0.15
+    radial = h.positions / np.linalg.norm(h.positions, axis=1, keepdims=True)
+    assert h.vertex_normals.shape == h.positions.shape
+    assert (radial * h.vertex_normals).sum(1).min() > np.cos(np.radians(2.0))
+    assert np.allclose(np.linalg.norm(h.vertex_normals, axis=1), 1.0, atol=1e-4)
+    # forced binary path on a part with the field, and a light pass stays close to the exact crossings
+    forced = mesh.surface_nets(p, pal, smooth_passes=0, hermite=False)
+    assert not forced.hermite and np.allclose(forced.positions, binary.positions)
+    soft = mesh.surface_nets(p, pal, hermite_passes=1)
+    assert soft.hermite and np.abs(np.linalg.norm(soft.positions, axis=1) / p.voxel_size - R).max() < 0.3
+    # the distance-transform fallback also feeds the Hermite path
+    q = p.copy()
+    q.sdf = None
+    assert sdfield.add_distance_field(q)
+    fb = mesh.surface_nets(q, pal)
+    assert fb.hermite and fb.is_closed()
+
+
+def test_hermite_nets_with_cubic_material_appended():
+    model, p = layered_ball(n=24, r=0.05, hair=True)
+    sdfield.add_distance_field(p)
+    m = mesh.surface_nets(p, model.palette, keep_cubic_materials=mesh.CUBIC_MATERIALS)
+    assert m.hermite and m.vertex_normals is not None and len(m.vertex_normals) == len(m.positions)
+    assert m.face_smooth.any() and (~m.face_smooth).any()
+    assert (m.face_material[~m.face_smooth] == MAT_HAIR).all()

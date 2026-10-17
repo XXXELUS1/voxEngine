@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from voxgen import checks
+from voxgen import checks, mesh, sdfield
 from voxgen.body import exposed
 from voxgen.materials import MAT_AIR, MAT_BONE, MAT_CARTILAGE, MAT_EYE, MAT_GLASS, MAT_HAIR, MAT_SKIN
 from voxgen.sculpthead import (EYES, GRIDS, HAIR_STYLES, PRESETS, SculptParams, build_sculpt_head, form_field,
@@ -41,7 +41,7 @@ def test_builds_and_passes_checks(balls_quiff):
     assert report["warnings"] == [], report["warnings"]
     b = m.meta["build"]
     assert b["form"]["components"] == 1 and b["form"]["grid"] == "fine"
-    assert b["face"]["mouth"] == 16 and b["face"]["lower_lip"] == 6 and b["face"]["nostril"] == 2
+    assert b["face"]["mouth"] == 20 and b["face"]["lower_lip"] == 8 and b["face"]["nostril"] == 2
     assert b["face"]["brow"] == 24 and b["face"]["lid"] == 8 and b["face"]["band"] > 0
     assert b["hair"]["pocket"] > 0 and b["hair"]["quiff"]["spikes"] == 4
     assert m.meta["seams"]["hair"]["overlap"] == 0 and m.meta["seams"]["hair"]["contact"] > 0
@@ -81,9 +81,44 @@ def test_form_is_smooth_sdf():
     near = (np.abs(f) < 1.0) & (np.abs(f) > 0.0)
     assert 0.7 < float(np.median(g[near])) < 1.3
     for grid in GRIDS:
-        _, solid, info = sculpt_form(SculptParams(grid=grid))
+        _, solid, field, info = sculpt_form(SculptParams(grid=grid))
         assert info["components"] == 1 and info["crumbs_removed"] == 0
         assert np.array_equal(solid, solid[:, :, ::-1])
+        assert (field is None) == (grid == "coarse")
+    assert p.hollow_r == 0.0                                      # no cheek hollow / nasolabial creases
+
+
+def test_sdf_field_is_the_exact_form(balls_quiff):
+    """The head carries the exact signed distance of the form (int8 sixteenths of a voxel): the
+    mask is exactly ``sdf < 0``, it round-trips through .vxm, it matches ``form_field`` away from
+    the carved pockets, and the Hermite nets read it (a vertex of the cheek sits on the zero set)."""
+    head = balls_quiff.part("head")
+    assert head.sdf is not None and head.sdf.dtype == np.int8 and head.fields[-1] == "sdf"
+    assert sdfield.is_consistent(head.sdf, head.solid())
+    p = SculptParams()
+    f = form_field(head, p)
+    carved = (f <= 0) & ~head.solid()
+    assert carved.sum() == balls_quiff.meta["build"]["sdf"]["carved"] > 0
+    q = sdfield.dequantize(head.sdf)
+    far_from_carve = np.sqrt(sdfield.edt_sq(carved)) > 5.0          # the carve distance there is > 4.5
+    diff = np.abs(q - f)[(np.abs(f) < 4.0) & far_from_carve]
+    assert diff.max() <= 1.5 / 16 + 1e-6                         # quantization + the consistency clamp
+    m = mesh.surface_nets(head, balls_quiff.palette)
+    assert m.hermite and m.vertex_normals is not None and m.n_faces > 0
+    # no vertex sits farther than a quarter voxel from the exact zero set (sampled trilinearly)
+    v = (m.positions - np.asarray(head.origin, np.float32)) / head.voxel_size - 0.5   # voxel-centre coords
+    v = np.clip(v, 0, np.array(head.shape[::-1]) - 1.001)
+    i0 = np.floor(v).astype(int)
+    fr = v - i0
+    val = np.zeros(len(v), np.float32)
+    for dz in (0, 1):
+        for dy in (0, 1):
+            for dx in (0, 1):
+                w = (fr[:, 0] if dx else 1 - fr[:, 0]) * (fr[:, 1] if dy else 1 - fr[:, 1]) * (fr[:, 2] if dz else 1 - fr[:, 2])
+                val += w * q[i0[:, 2] + dz, i0[:, 1] + dy, i0[:, 0] + dx]
+    cheek = (np.abs(m.positions[:, 0]) > 0.04) & (m.positions[:, 1] > 0.06) & (m.positions[:, 1] < 0.12) \
+        & (m.positions[:, 2] < -0.03)
+    assert cheek.sum() > 50 and np.abs(val[cheek]).max() < 0.25
 
 
 def test_coarse_grid_is_whole_blocks():

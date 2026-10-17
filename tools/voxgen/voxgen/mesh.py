@@ -17,7 +17,14 @@ Pure numpy, importable without Blender. Two builders, both returning a :class:`M
   the voxel that owns them (crisp eyes, lips), vertices get a "cavity" AO. Materials in
   ``keep_cubic_materials`` (empty by default, so hair and teeth are part of the smooth surface;
   ``CUBIC_MATERIALS`` = teeth + hair restores the cubic look) are excluded from the smooth surface
-  and appended as culled cubes (culled against the full occupancy).
+  and appended as culled cubes (culled against the full occupancy). **Hermite mode**
+  (``hermite=True``, the default when the part carries the ``sdf`` field of
+  :mod:`voxgen.sdfield`): every crossing edge of a cell puts its point at the linear zero crossing
+  of the two corner distances, the vertex is the mean of its crossings (classic Hermite surface
+  nets, the surface the voxels were sampled from is recovered to ~1/16 voxel), the normals are the
+  trilinearly sampled Sobel gradient of the field (``Mesh.vertex_normals``), and no Laplacian pass
+  runs (``hermite_passes`` adds light cell-clamped ones). A corner pair whose occupancy and field
+  disagree (a cubic material cut out of the surface) crosses at the edge midpoint.
 * :func:`step_edge_weights` - per-edge chamfer weights for the "facet" look (cubes whose one-voxel
   steps become exact 45 degree slopes while big flat faces stay crisp). Rule, to be ported to C++
   as is: for every mesh edge shared by exactly two quads with different normals (a convex or
@@ -43,6 +50,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from . import materials as M
+from .sdfield import SDF_SCALE
 
 CUBIC_MATERIALS = (M.MAT_TOOTH, M.MAT_HAIR)
 SMOOTH_CLAMPS = ("cell", "free")
@@ -58,6 +66,8 @@ class Mesh:
     corner_ao: np.ndarray       # (F, 4) float32 AO per quad corner in (0, 1]
     face_smooth: np.ndarray     # (F,) bool: True for surface-nets faces, False for cubes
     vertex_colors: np.ndarray | None = None  # (N, 4) uint8 rgb + ao per vertex (surface nets only)
+    vertex_normals: np.ndarray | None = None  # (N, 3) float32 unit normals (Hermite nets: sdf gradient)
+    hermite: bool = False       # True when the smooth faces came from the sdf field (Hermite nets)
 
     @property
     def n_faces(self) -> int:
@@ -135,9 +145,15 @@ def _concat(a: Mesh, b: Mesh) -> Mesh:
         va = a.vertex_colors if a.vertex_colors is not None else np.full((len(a.positions), 4), 255, np.uint8)
         vb = b.vertex_colors if b.vertex_colors is not None else np.full((len(b.positions), 4), 255, np.uint8)
         vc = np.concatenate([va, vb])
+    vn = None
+    if a.vertex_normals is not None or b.vertex_normals is not None:
+        na = a.vertex_normals if a.vertex_normals is not None else _vertex_normals(a.positions, a.quads)
+        nb = b.vertex_normals if b.vertex_normals is not None else _vertex_normals(b.positions, b.quads)
+        vn = np.concatenate([na, nb]).astype(np.float32)
     return Mesh(np.concatenate([a.positions, b.positions]), np.concatenate([a.quads, b.quads + off]),
                 np.concatenate([a.face_colors, b.face_colors]), np.concatenate([a.face_material, b.face_material]),
-                np.concatenate([a.corner_ao, b.corner_ao]), np.concatenate([a.face_smooth, b.face_smooth]), vc)
+                np.concatenate([a.corner_ao, b.corner_ao]), np.concatenate([a.face_smooth, b.face_smooth]), vc, vn,
+                a.hermite or b.hermite)
 
 
 # ----------------------------------------------------------------------------- culled quads
@@ -212,11 +228,19 @@ def culled_quads(part, palette, jitter=0.06, ao=True, only_materials=None) -> Me
 
 
 # ----------------------------------------------------------------------------- surface nets
-def _surface_nets(material, color, pal, solid, smooth_passes, jitter, inset=0.02, clamp="cell", inflate=0.0):
-    """Core of :func:`surface_nets`; positions in voxel corner units. Returns None when empty."""
+def _surface_nets(material, color, pal, solid, smooth_passes, jitter, inset=0.02, clamp="cell", inflate=0.0,
+                  sdf_vox=None, hermite_passes=0):
+    """Core of :func:`surface_nets`; positions in voxel corner units. Returns None when empty.
+    ``sdf_vox``: (nz, ny, nx) float32 signed distance in voxels (negative inside) -> Hermite mode."""
     nz, ny, nx = material.shape
     occ = np.zeros((nz + 2, ny + 2, nx + 2), bool)
     occ[1:-1, 1:-1, 1:-1] = solid
+    hermite = sdf_vox is not None
+    if hermite:
+        # pad with |edge value|: an air pad next to a solid boundary voxel crosses at the part's face
+        spad = np.pad(np.asarray(sdf_vox, np.float32), 1, mode="edge")
+        border = np.pad(np.zeros((nz, ny, nx), bool), 1, constant_values=True)
+        spad[border] = np.abs(spad[border])
     corner_off = np.array([(ux, uy, uz) for uz in (0, 1) for uy in (0, 1) for ux in (0, 1)], np.int64)
     cz, cy, cx = nz + 1, ny + 1, nx + 1
     corners = np.stack([occ[uz:uz + cz, uy:uy + cy, ux:ux + cx] for (ux, uy, uz) in corner_off], axis=-1)
@@ -231,11 +255,22 @@ def _surface_nets(material, color, pal, solid, smooth_passes, jitter, inset=0.02
     cmin = cell_idx[:, ::-1].astype(np.float32)  # xyz cell min corner (padded voxel-centre space)
     cc = corners[active]
 
-    # vertex = mean of the crossing edge midpoints of the cell
+    # vertex = mean of the crossing points of the cell's edges: the edge midpoints (binary), or
+    # the linear zero crossings of the corner distances (Hermite)
     edges = np.array([(i, i | (1 << ax)) for i in range(8) for ax in range(3) if not i & (1 << ax)])
-    mid = (corner_off[edges[:, 0]] + corner_off[edges[:, 1]]).astype(np.float32) * 0.5
     cross = cc[:, edges[:, 0]] != cc[:, edges[:, 1]]
-    acc = (cross[:, :, None] * mid[None, :, :]).sum(1)
+    c0, c1 = corner_off[edges[:, 0]].astype(np.float32), corner_off[edges[:, 1]].astype(np.float32)
+    if hermite:
+        sc = np.stack([spad[uz:uz + cz, uy:uy + cy, ux:ux + cx] for (ux, uy, uz) in corner_off], axis=-1)[active]
+        s0, s1 = sc[:, edges[:, 0]], sc[:, edges[:, 1]]
+        den = s0 - s1
+        ok = ((s0 < 0) != (s1 < 0)) & (np.abs(den) > 1e-6)
+        t = np.where(ok, s0 / np.where(ok, den, 1.0), 0.5)
+        t = np.clip(t, 0.0, 1.0).astype(np.float32)
+        pts = c0[None, :, :] + t[:, :, None] * (c1 - c0)[None, :, :]          # (V, 12, 3)
+    else:
+        pts = np.broadcast_to(((c0 + c1) * 0.5)[None, :, :], (V, len(edges), 3))
+    acc = (cross[:, :, None] * pts).sum(1)
     pos = cmin + acc / np.maximum(cross.sum(1)[:, None].astype(np.float32), 1)
 
     # one quad per crossing edge of the voxel grid
@@ -267,8 +302,11 @@ def _surface_nets(material, color, pal, solid, smooth_passes, jitter, inset=0.02
     fvox = np.concatenate(all_fvox)
 
     # Laplacian (umbrella) smoothing: "cell" clamps each vertex to its cell, "free" restores the volume
+    # (Hermite: only the optional light cell-clamped passes, the positions are already exact)
     if clamp not in SMOOTH_CLAMPS:
         raise ValueError(f"clamp must be one of {SMOOTH_CLAMPS}, not {clamp!r}")
+    if hermite:
+        smooth_passes, clamp = int(hermite_passes), "cell"
     if smooth_passes > 0:
         e0 = np.concatenate([quads[:, i] for i in range(4)])
         e1 = np.concatenate([quads[:, (i + 1) % 4] for i in range(4)])
@@ -297,9 +335,56 @@ def _surface_nets(material, color, pal, solid, smooth_passes, jitter, inset=0.02
     vox = np.clip(cmin.astype(np.int64) + corner_off[np.argmin(d, axis=1)] - 1, 0, [nx - 1, ny - 1, nz - 1])
     vrgb = _voxel_rgb(pal, color, vox, jitter)
     vao = 1.0 - np.clip((nsolid[active].astype(np.float32) - 4.0) / 3.0, 0.0, 1.0) * 0.5
+    normals = _sdf_normals(spad, cell_idx, corner_off, pos - cmin, pos, quads) if hermite else None
     positions = (pos - 0.5).astype(np.float32)  # padded centre space -> unpadded corner space
     return positions, quads, _voxel_rgb(pal, color, fvox, jitter), material[fvox[:, 2], fvox[:, 1], fvox[:, 0]], \
-        vrgb, vao.astype(np.float32)
+        vrgb, vao.astype(np.float32), normals
+
+
+def _sobel_gradient(f: np.ndarray) -> np.ndarray:
+    """(3, nz, ny, nx) gradient (x, y, z components) of a (nz, ny, nx) field: central difference
+    along the axis, [1 2 1]/4 smoothing along the other two (edges replicated), so the 1/16 voxel
+    quantization of the sdf field does not grain the normals."""
+    p = np.pad(np.asarray(f, np.float32), 1, mode="edge")
+
+    def diff(a, ax):  # central difference along ax (shrinks a by 2 along ax)
+        lo, hi = [slice(None)] * 3, [slice(None)] * 3
+        lo[ax], hi[ax] = slice(0, -2), slice(2, None)
+        return 0.5 * (a[tuple(hi)] - a[tuple(lo)])
+
+    def smooth(a, ax):  # [1 2 1] / 4 along ax (shrinks a by 2 along ax)
+        lo, mid, hi = [slice(None)] * 3, [slice(None)] * 3, [slice(None)] * 3
+        lo[ax], mid[ax], hi[ax] = slice(0, -2), slice(1, -1), slice(2, None)
+        return 0.25 * a[tuple(lo)] + 0.5 * a[tuple(mid)] + 0.25 * a[tuple(hi)]
+
+    out = np.empty((3,) + tuple(f.shape), np.float32)
+    for comp, ax in ((0, 2), (1, 1), (2, 0)):  # x -> numpy axis 2, y -> 1, z -> 0
+        d = diff(p, ax)
+        for a in range(3):
+            if a != ax:
+                d = smooth(d, a)
+        out[comp] = d
+    return out
+
+
+def _sdf_normals(spad, cell_idx, corner_off, frac, pos, quads) -> np.ndarray:
+    """(V, 3) unit normals of the Hermite vertices: the Sobel gradient of the padded field at the
+    8 cell corners, trilinearly weighted by the vertex's position in its cell; where the gradient
+    vanishes (a saturated or flat field) the mesh normal is used instead."""
+    g = _sobel_gradient(spad)                                           # (3, cz+1, cy+1, cx+1)
+    V = len(cell_idx)
+    w = np.ones((V, 8), np.float32)
+    fr = np.clip(frac, 0.0, 1.0).astype(np.float32)
+    for i, (ux, uy, uz) in enumerate(corner_off):
+        for ax, u in ((0, ux), (1, uy), (2, uz)):
+            w[:, i] *= fr[:, ax] if u else (1.0 - fr[:, ax])
+    acc = np.zeros((V, 3), np.float32)
+    for i, (ux, uy, uz) in enumerate(corner_off):
+        gi = g[:, cell_idx[:, 0] + uz, cell_idx[:, 1] + uy, cell_idx[:, 2] + ux].T  # (V, 3)
+        acc += w[:, i:i + 1] * gi
+    n = np.linalg.norm(acc, axis=1, keepdims=True)
+    mesh_n = _vertex_normals(pos, quads)
+    return np.where(n > 1e-4, acc / np.maximum(n, 1e-12), mesh_n).astype(np.float32)
 
 
 def _signed_volume(pos, quads) -> float:
@@ -320,23 +405,34 @@ def _vertex_normals(pos, quads) -> np.ndarray:
 
 
 def surface_nets(part, palette, smooth_passes=2, keep_cubic_materials=(), jitter=0.04, clamp="cell",
-                 inflate=0.0) -> Mesh:
+                 inflate=0.0, hermite=None, hermite_passes=0) -> Mesh:
     """Smooth surface of a part (naive surface nets + Laplacian smoothing, see the module docstring
     for ``clamp`` and ``inflate``, the latter in voxels), with the materials in ``keep_cubic_materials``
-    (none by default) left out of the surface and appended as culled cubes."""
+    (none by default) left out of the surface and appended as culled cubes. ``hermite``: None =
+    Hermite nets when the part has the ``sdf`` field, else the binary path; True requires the field;
+    False forces the binary path. ``hermite_passes``: light cell-clamped Laplacian passes in Hermite
+    mode (0 = the exact crossings)."""
     material, color = part.material, part.color
     pal = _palette_u8(palette)
     cubic = np.isin(material, list(keep_cubic_materials)) if keep_cubic_materials else np.zeros_like(material, bool)
     solid = (material != M.MAT_AIR) & ~cubic
-    res = _surface_nets(material, color, pal, solid, smooth_passes, jitter, clamp=clamp, inflate=inflate)
+    sdf_q = getattr(part, "sdf", None)
+    if hermite is None:
+        hermite = sdf_q is not None
+    elif hermite and sdf_q is None:
+        raise ValueError(f"part {part.name!r} has no 'sdf' field: hermite surface nets need one (voxgen sdf)")
+    sdf_vox = (sdf_q.astype(np.float32) / np.float32(SDF_SCALE)) if hermite else None
+    res = _surface_nets(material, color, pal, solid, smooth_passes, jitter, clamp=clamp, inflate=inflate,
+                        sdf_vox=sdf_vox, hermite_passes=hermite_passes)
     if res is None:
         out = _empty(part)
     else:
-        positions, quads, frgb, fmat, vrgb, vao = res
+        positions, quads, frgb, fmat, vrgb, vao, normals = res
         corner_ao = vao[quads]
         out = Mesh(_to_metres(part, positions), quads, _pack_face_colors(frgb, corner_ao), fmat.astype(np.uint8),
                    corner_ao.astype(np.float32), np.ones(len(quads), bool),
-                   np.concatenate([vrgb, np.clip(vao * 255 + 0.5, 0, 255).astype(np.uint8)[:, None]], axis=1))
+                   np.concatenate([vrgb, np.clip(vao * 255 + 0.5, 0, 255).astype(np.uint8)[:, None]], axis=1),
+                   normals, bool(hermite))
     if cubic.any():
         cubes = culled_quads(part, palette, jitter=0.06, ao=True, only_materials=keep_cubic_materials)
         if cubes.n_faces:

@@ -7,10 +7,14 @@
 
 ```
 voxgen build <spec.py> [--out godot/assets/models] [--preview build/previews] [--vox build/vox]
-                       [--report build/reports] [--no-check] [--size 256]
+                       [--report build/reports] [--no-check] [--size 256] [--sdf]
     Импортирует спек-модуль, вызывает build() -> Model, пишет <name>.vxm, <name>.vox (+ .vox.json),
     контактный лист превью <name>.png (--size — пикселей на вид), отчёт проверок <report>/<name>.json.
-    Код возврата 1, если проверки нашли ошибки уровня error.
+    Код возврата 1, если проверки нашли ошибки уровня error. `--sdf` — частям без поля `sdf` добавить
+    его из бинарного объёма (`sdfield.distance_field`: точный EDT, знак, размытие 3³ у поверхности).
+voxgen sdf <file.vxm> [--out <file.vxm>] [--force] [--no-blur]
+    Добавить поле `sdf` (int8, docs/spec/vxm-format.md) всем частям модели, у которых его нет
+    (`--force` — пересчитать и имеющиеся); по умолчанию перезаписывает входной файл.
 voxgen build-all [specs-dir]           все specs/**/*.py, кроме начинающихся с "_" (те же опции)
 voxgen preview <file.vxm|.vox|spec.py> [--out x.png] [--size 256] [--part NAME]
                [--views front,back,left,right,top,bottom,iso,iso2,slice_x,slice_y,slice_z]
@@ -22,7 +26,7 @@ voxgen info <file.vxm>                  части, размеры, число �
 voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,clay,toon,mix]
               [--light studio|candle] [--views three_quarter,front,profile,full] [--size 640] [--samples 96]
               [--bg dark|grey|light] [--part-styles head=smooth,hair=facet] [--smooth-passes 2]
-              [--smooth-clamp cell|free] [--smooth-inflate 0]
+              [--smooth-clamp cell|free] [--smooth-inflate 0] [--no-hermite] [--hermite-passes 0]
               [--out build/renders/<name>/] [--cubic-materials 5,8] [--jitter 0] [--save-blend]
     Красивые рендеры в Blender (bpy как python-модуль, venv из scripts/install_blender.sh:
     $VOXENGINE_BPY или ~/.cache/voxengine/venv-bpy; без него — понятная ошибка с командой установки).
@@ -45,17 +49,24 @@ voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,c
     часть→стиль для любого стиля (стили частей: cubes,bevel,facet,facet_all,smooth,clay). Гладкие части:
     `--smooth-passes N` (проходов Лапласа, по умолчанию 2), `--smooth-clamp cell|free` (cell — вершины не
     выходят из своей ячейки; free — без зажима, объём восстанавливается общим сдвигом по нормали),
-    `--smooth-inflate V` (сдвиг наружу в вокселях, 0..0.5, закрывает щель у кубических волос). Карта
-    частей и параметры nets пишутся в .json и в подпись листа. Код возврата 1, если хоть один рендер упал.
+    `--smooth-inflate V` (сдвиг наружу в вокселях, 0..0.5, закрывает щель у кубических волос). Гладкая
+    часть с полем `sdf` строится Hermite surface nets: вершины в точном ноль-пересечении поля, нормали —
+    его градиент (custom split normals), без проходов Лапласа; `--no-hermite` — бинарный путь и для неё,
+    `--hermite-passes N` — лёгкие проходы поверх точных вершин. В .json пишется `smooth.hermite`, подпись
+    листа — «nets hermite». Карта частей и параметры nets пишутся в .json и в подпись листа. Код возврата
+    1, если хоть один рендер упал.
 voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]   пересобрать контактный лист из рендеров
 ```
 
 Мешеры `voxgen.mesh` (чистый numpy, без Blender): `culled_quads(part, palette, jitter, ao)`,
 `step_edge_weights(mesh, part, mode='steps'|'all', min_run=2)` (веса фасок для `facet`) и
-`surface_nets(part, palette, smooth_passes, keep_cubic_materials=(), clamp='cell'|'free', inflate=0)` →
+`surface_nets(part, palette, smooth_passes, keep_cubic_materials=(), clamp='cell'|'free', inflate=0,
+hermite=None, hermite_passes=0)` (`hermite=None` — Hermite-режим, если у части есть поле `sdf`) →
 `Mesh` (positions float32 (N,3) в
 метрах local space части, оси Godot; quads int32 (F,4) CCW снаружи; face_colors uint8 (F,4) rgb+ao;
-face_material; corner_ao; face_smooth; vertex_colors для surface nets).
+face_material; corner_ao; face_smooth; vertex_colors для surface nets; vertex_normals и флаг `hermite`
+в Hermite-режиме). Поле расстояний: `voxgen.sdfield` — `distance_field(solid, voxel_size)` (метры, точный
+EDT без scipy), `quantize(d_vox, solid)` → int8, `update_sdf` (срез/добавление), `add_distance_field(part)`.
 
 ## Спек-файл
 
@@ -64,7 +75,7 @@ Python-модуль с функцией `build() -> voxgen.Model`. Пример:
 
 ## Что должно быть в библиотеке (минимум)
 
-- `Model(name, voxel_size)`, `Model.add_part(Part)`, `Part(name, dims, voxel_size, origin, bone)` с numpy-полями `material`, `color`, `state` (uint8, shape (nz, ny, nx) в numpy или (nx,ny,nz) — главное, чтобы запись в .vxm шла x-fastest; задокументировать выбор).
+- `Model(name, voxel_size)`, `Model.add_part(Part)`, `Part(name, dims, voxel_size, origin, bone)` с numpy-полями `material`, `color`, `state` (uint8, shape (nz, ny, nx) в numpy или (nx,ny,nz) — главное, чтобы запись в .vxm шла x-fastest; задокументировать выбор); дополнительные именованные поля `Part.extra` (байт на воксель, `part.sdf` — int8-поле расстояний, `paint`/`clear` держат его согласованным с маской).
 - Палитра: `Palette` с `add(name, rgb) -> index`, поиск ближайшего, лимит 256, индекс 0 = воздух.
 - Материалы: `materials.py` — те же id, что в `docs/spec/vxm-format.md`.
 - SDF-примитивы на numpy-сетке (возвращают поле расстояний в вокселях): sphere, ellipsoid, capsule, box (rounded), cylinder, cone, torus; операции union/subtract/intersect/smooth_union; трансформы translate/rotate (Euler)/scale; `mirror_x` (симметрия); шум (value noise 3D) для смещения поверхности.

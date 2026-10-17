@@ -62,8 +62,16 @@ class Part:
       budget      voxel budget for checks.budget (None -> checks default)
 
     Fields (uint8, shape (nz, ny, nx), index ``[z, y, x]``): ``material``, ``color``
-    (palette index), ``state`` (damage bits, normally 0 in generated models).
+    (palette index), ``state`` (damage bits, normally 0 in generated models). Optional named
+    fields live in ``extra`` (one byte per voxel each, written after the three in ``fields``
+    order): ``sdf`` (int8 signed distance, see :mod:`voxgen.sdfield`) is the known one, exposed as
+    ``part.sdf`` (None when absent); unknown fields read from a file are kept as raw uint8 so a
+    read-write round trip loses nothing. ``paint`` / ``clear`` keep ``sdf`` consistent with the
+    solid mask (``(sdf < 0) == solid()``); code that writes ``material`` directly must update or
+    drop it itself.
     """
+
+    FIELDS = ("material", "color", "state")
 
     def __init__(self, name: str, dims, voxel_size: float, origin: Vec3 = (0.0, 0.0, 0.0),
                  bone: str = "", symmetric: bool = False, budget: int | None = None):
@@ -81,6 +89,7 @@ class Part:
         self.material = np.zeros((nz, ny, nx), np.uint8)
         self.color = np.zeros((nz, ny, nx), np.uint8)
         self.state = np.zeros((nz, ny, nx), np.uint8)
+        self.extra: dict[str, np.ndarray] = {}
         self.model: "Model | None" = None
         self._coords = None
 
@@ -150,6 +159,51 @@ class Part:
             self._coords = (np.ascontiguousarray(X), np.ascontiguousarray(Y), np.ascontiguousarray(Z))
         return self._coords
 
+    # -- fields ------------------------------------------------------------------
+    @property
+    def fields(self) -> list[str]:
+        """Field names in file order: the three standard ones, then ``extra`` in insertion order."""
+        return list(self.FIELDS) + list(self.extra)
+
+    def get_field(self, name: str) -> np.ndarray | None:
+        """A field array by name (standard or extra), None when the part has no such field."""
+        if name in self.FIELDS:
+            return getattr(self, name)
+        return self.extra.get(name)
+
+    def set_field(self, name: str, arr: np.ndarray | None) -> None:
+        """Set (or with None remove) an extra field: shape ``(nz, ny, nx)``, one byte per voxel
+        (``uint8`` or ``int8``). The standard fields are assigned directly."""
+        if name in self.FIELDS:
+            if arr is None:
+                raise ValueError(f"field {name!r} is mandatory")
+            setattr(self, name, np.ascontiguousarray(arr, np.uint8))
+            return
+        if arr is None:
+            self.extra.pop(name, None)
+            return
+        arr = np.asarray(arr)
+        if arr.shape != self.shape or arr.dtype.itemsize != 1:
+            raise ValueError(f"field {name!r} must be a one-byte array of shape {self.shape}, "
+                             f"got {arr.dtype} {arr.shape}")
+        self.extra[name] = np.ascontiguousarray(arr)
+
+    @property
+    def sdf(self) -> np.ndarray | None:
+        """The ``sdf`` field as int8 (signed distance, voxels * 16, negative inside), or None."""
+        q = self.extra.get("sdf")
+        return None if q is None else q.view(np.int8)
+
+    @sdf.setter
+    def sdf(self, q: np.ndarray | None) -> None:
+        self.set_field("sdf", None if q is None else np.asarray(q, np.int8))
+
+    def _sync_sdf(self, solid_before: np.ndarray) -> None:
+        """After a change of ``material``: carve / add the difference into ``sdf`` when present."""
+        if "sdf" in self.extra:
+            from . import sdfield
+            self.sdf = sdfield.update_sdf(self.sdf, solid_before, self.solid())
+
     # -- voxel access ----------------------------------------------------------
     def solid(self) -> np.ndarray:
         """bool mask (nz, ny, nx) of non-air voxels."""
@@ -178,19 +232,25 @@ class Part:
             mask = mask & np.isin(self.material, list(only))
         n = int(np.count_nonzero(mask))
         if n:
+            before = self.solid() if "sdf" in self.extra else None
             self.material[mask] = np.uint8(material)
             self.color[mask] = np.uint8(color)
             if material == M.MAT_AIR:
                 self.state[mask] = 0
+            if before is not None:
+                self._sync_sdf(before)
         return n
 
     def clear(self, region) -> int:
         """Set voxels inside ``region`` to air. Returns the number of voxels removed."""
         mask = as_mask(region, self.shape) & self.solid()
         n = int(np.count_nonzero(mask))
+        before = self.solid() if (n and "sdf" in self.extra) else None
         self.material[mask] = 0
         self.color[mask] = 0
         self.state[mask] = 0
+        if before is not None:
+            self._sync_sdf(before)
         return n
 
     def material_histogram(self) -> dict[int, int]:
@@ -205,6 +265,7 @@ class Part:
         p.material = self.material.copy()
         p.color = self.color.copy()
         p.state = self.state.copy()
+        p.extra = {k: v.copy() for k, v in self.extra.items()}
         return p
 
     def __repr__(self) -> str:

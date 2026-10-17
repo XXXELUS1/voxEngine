@@ -3,7 +3,9 @@
 Layout: ``"VXM1"`` | uint32 LE header length | UTF-8 JSON header | raw fields.
 For every part in order, for every field in ``part.fields`` order, ``nx*ny*nz`` bytes with
 ``index = x + nx*(y + ny*z)``; our arrays are ``(nz, ny, nx)`` C-order so that is
-``array.tobytes()``.
+``array.tobytes()``. The standard fields (``material``, ``color``, ``state``) are uint8; the
+optional ``sdf`` field is int8 (:mod:`voxgen.sdfield`); any other field name is kept as raw
+uint8 in ``Part.extra`` so it survives a read-write round trip (the C++ loader skips it).
 """
 
 from __future__ import annotations
@@ -19,7 +21,8 @@ from .model import Model, Part
 from .palette import Palette
 
 MAGIC = b"VXM1"
-FIELDS = ("material", "color", "state")
+FIELDS = Part.FIELDS
+SIGNED_FIELDS = ("sdf",)
 
 
 def header_dict(model: Model, spec: str | None = None) -> dict:
@@ -31,7 +34,7 @@ def header_dict(model: Model, spec: str | None = None) -> dict:
             "voxel_size": p.voxel_size,
             "origin": [float(v) for v in p.origin],
             "dims": [p.nx, p.ny, p.nz],
-            "fields": list(FIELDS),
+            "fields": p.fields,
         })
     meta = {"generator": f"voxgen {__version__}"}
     if spec:
@@ -52,9 +55,9 @@ def to_bytes(model: Model, spec: str | None = None) -> bytes:
     header = json.dumps(header_dict(model, spec), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     chunks = [MAGIC, struct.pack("<I", len(header)), header]
     for p in model.parts:
-        for f in FIELDS:
-            arr = getattr(p, f)
-            assert arr.shape == (p.nz, p.ny, p.nx) and arr.dtype == np.uint8
+        for f in p.fields:
+            arr = p.get_field(f)
+            assert arr.shape == (p.nz, p.ny, p.nx) and arr.dtype.itemsize == 1, f
             chunks.append(np.ascontiguousarray(arr).tobytes())
     return b"".join(chunks)
 
@@ -88,9 +91,8 @@ def from_bytes(data: bytes) -> Model:
             if len(raw) != n:
                 raise ValueError(f"truncated field {field!r} of part {part.name!r}")
             pos += n
-            if field in FIELDS:
-                setattr(part, field, np.frombuffer(raw, np.uint8).reshape(nz, ny, nx).copy())
-            # unknown fields are skipped
+            dtype = np.int8 if field in SIGNED_FIELDS else np.uint8
+            part.set_field(field, np.frombuffer(raw, dtype).reshape(nz, ny, nx).copy())
         model.add_part(part)
     return model
 

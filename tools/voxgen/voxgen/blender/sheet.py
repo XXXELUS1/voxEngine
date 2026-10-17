@@ -80,7 +80,10 @@ def make_sheet(dir_path, out=None, tile: int = 640, cols: int = 3, pad: int = 12
                f"{info.get('samples', '?')} spl  |  {info.get('render_seconds', '?')} s  |  {faces_txt}")
         sm = info.get("smooth")
         if sm and "smooth" in mapping.values():
-            txt += f"  |  nets {sm.get('clamp', '?')} x{sm.get('passes', '?')}"
+            if sm.get("hermite"):
+                txt += "  |  nets hermite" + (f" x{sm['hermite_passes']}" if sm.get("hermite_passes") else "")
+            else:
+                txt += f"  |  nets {sm.get('clamp', '?')} x{sm.get('passes', '?')}"
             if sm.get("inflate"):
                 txt += f" +{sm['inflate']:g}"
         d.text((x + 10, y + tile + 34), txt, font=_fit_font(d, txt, tile - 20, FONT), fill=(170, 170, 175))

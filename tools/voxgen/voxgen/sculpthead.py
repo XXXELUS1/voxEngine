@@ -10,7 +10,11 @@ philtrum, rounded ears. Human proportions, mildly stylised: not big eyes, not a 
 realistic skull. So the form here is a sum of smooth-unioned primitives (``voxgen.sdf``), every
 blend radius 8-20 mm so the surface has no creases, no noise displacement; the smooth render
 (``voxgen render --styles mix``, surface nets) reads it as a sculpture while the engine keeps
-5 mm voxels to shave and cut.
+5 mm voxels to shave and cut. The head part also carries the ``sdf`` field (:mod:`voxgen.sdfield`):
+the exact ``form_field`` in int8 sixteenths of a voxel, carved where the hair pocket, the eye
+sockets and the crumb removal cut the form (``max(d, -d_carved)``: the cut faces become the
+surface), so ``(sdf < 0) == solid`` exactly and the smooth render meshes the zero crossing
+(Hermite surface nets) instead of smoothing the binary stairs - no ripples on the cheeks.
 
 Construction (:func:`form_field`, metres; Y up, chin's bottom near y = 0, face toward -Z,
 mirror-symmetric about x = 0 by evaluating the paired primitives on ``sdf.mirror_x``):
@@ -19,14 +23,15 @@ mirror-symmetric about x = 0 by evaluating the paired primitives on ``sdf.mirror
              degrees toward the crown) with a soft seam (``smooth_intersect``);
   brow ridge horizontal capsule across the forehead's base, smooth-unioned;
   mid-face   an ellipsoid (the maxilla: cheek to cheek, eyes to mouth), two cheekbone ellipsoids,
-             an optional weak cheek hollow (``smooth_subtract``) below them, optional shallow
-             eye-socket dents (``socket_depth``; the eyeball parts carve their own windows);
+             an optional cheek hollow (``hollow_r``, off by default: the subtract read as
+             nasolabial creases), optional shallow eye-socket dents (``socket_depth``; the eyeball
+             parts carve their own windows);
   jaw        a mandible capsule per side from the jaw angle under the ear to beside the chin, the
              lower-face ellipsoid filling between them, a chin sphere for the bulge;
   nose       a cone bridge (root narrower than the end) from the nasion to the tip, a tip sphere,
              two wing spheres; blended into the face with its own radius;
-  lips       a horizontal capsule a few mm proud of the upper lip, a philtrum groove subtracted
-             above it (one voxel deep at 5 mm);
+  lips       a horizontal capsule ~2 mm proud of the surrounding face, a short philtrum groove
+             subtracted between it and the nose (one voxel deep at 5 mm);
   ears       flattened ellipsoids on the skull sides with a concha dent;
   neck       a cylinder, blended into the jaw.
 ``grid="fine"`` samples the field at 5 mm; ``grid="coarse"`` samples it at 10 mm, keeps the
@@ -34,7 +39,7 @@ largest component and upsamples x2 (every step two fine voxels, as the box prese
 compared in the smooth render.
 
 Everything else is the box preset's vocabulary: the head part carries skin / fat / muscle / bone
-by depth (nose and ears cartilage), the face is colour only (:func:`paint_face`: a 2 x 8 mouth
+by depth (nose and ears cartilage), the face is colour only (:func:`paint_face`: a 2 x 10 mouth
 line + lower-lip tone, two nostril voxels under the nose, the shade band under the brow ridge
 (or the sunglasses), the under-faces and the neck in the shade tone, 6 x 2 brows in the hair
 tone), eyes ``balls`` (3 mm eyeball parts in carved sockets, ``voxgen.refhead.carve_sockets``) /
@@ -59,7 +64,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from . import materials as M
-from . import meshvox, sdf
+from . import meshvox, sdf, sdfield
 from .body import dilate, exposed, shift
 from .checks import label_components
 from .facedetail import _cols, _rect, front_face, hole_walls, x_coords
@@ -112,8 +117,8 @@ class SculptParams:
     brow_y: float = 0.138
     brow_half_w: float = 0.046
     brow_z: float = -0.084
-    brow_r: float = 0.012
-    brow_k: float = 0.012
+    brow_r: float = 0.010
+    brow_k: float = 0.016
     # -- mid-face
     face_c: Vec3 = (0.0, 0.098, -0.034)
     face_r: Vec3 = (0.064, 0.050, 0.052)
@@ -122,7 +127,7 @@ class SculptParams:
     cheek_r: Vec3 = (0.025, 0.018, 0.028)
     cheek_k: float = 0.020
     hollow_c: Vec3 = (0.074, 0.076, -0.048)
-    hollow_r: float = 0.020          # 0 disables the cheek hollow
+    hollow_r: float = 0.0            # 0 disables the cheek hollow (default: off, it read as creases)
     hollow_k: float = 0.015
     socket_c: Vec3 = (0.031, 0.116, -0.101)
     socket_r: Vec3 = (0.018, 0.011, 0.020)
@@ -136,7 +141,7 @@ class SculptParams:
     lower_c: Vec3 = (0.0, 0.050, -0.030)
     lower_r: Vec3 = (0.058, 0.046, 0.056)
     chin_c: Vec3 = (0.0, 0.024, -0.077)
-    chin_r: float = 0.022
+    chin_r: float = 0.019
     chin_k: float = 0.012
     # -- nose
     nasion: Vec3 = (0.0, 0.124, -0.083)
@@ -149,13 +154,13 @@ class SculptParams:
     nose_k: float = 0.008            # between the nose pieces
     nose_face_k: float = 0.010       # nose into the face
     # -- lips
-    lips_y: float = 0.065
-    lips_half_w: float = 0.020
-    lips_z: float = -0.075
-    lips_r: float = 0.009
+    lips_y: float = 0.070
+    lips_half_w: float = 0.025
+    lips_z: float = -0.076
+    lips_r: float = 0.008
     lips_k: float = 0.008
     philtrum_r: float = 0.004        # 0 disables
-    philtrum_y: tuple[float, float] = (0.073, 0.083)
+    philtrum_y: tuple[float, float] = (0.078, 0.084)
     philtrum_z: float = -0.082
     # -- ears
     ear_c: Vec3 = (0.076, 0.110, 0.012)
@@ -174,7 +179,7 @@ class SculptParams:
     eye_y: float = 0.115
     hairline_y: float = 0.175
     crown_y: float = 0.235
-    mouth_half_cols: float = 3.5     # fine |X| of the outer mouth column (3.5 -> 8 columns = 4 cm)
+    mouth_half_cols: float = 4.5     # fine |X| of the outer mouth column (4.5 -> 10 columns = 5 cm)
     lower_lip: bool = True
     brow_shade_rows: int = 1
     shade_rows: int = 2
@@ -201,8 +206,8 @@ class SculptParams:
         if preset == "sculpt_broad":
             p = replace(p, cranium_r=(0.079, 0.090, 0.096), cranium_power=2.8,
                         jaw_angle=(0.061, 0.080, 0.012), jaw_r=0.023, jaw_chin=(0.034, 0.022, -0.066),
-                        lower_r=(0.064, 0.046, 0.056), chin_r=0.025, cheek_c=(0.052, 0.108, -0.058),
-                        cheek_r=(0.022, 0.017, 0.026), brow_r=0.013, face_r=(0.069, 0.050, 0.052),
+                        lower_r=(0.064, 0.046, 0.056), chin_r=0.022, cheek_c=(0.052, 0.108, -0.058),
+                        cheek_r=(0.022, 0.017, 0.026), brow_r=0.011, face_r=(0.069, 0.050, 0.052),
                         ear_c=(0.079, 0.110, 0.012), ear_inner_x=0.068, concha_c=(0.093, 0.108, 0.013))
         return replace(p, **overrides)
 
@@ -287,14 +292,18 @@ def head_part(p: SculptParams, voxel: float) -> Part:
                             voxel, bone="head", symmetric=True)
 
 
-def sculpt_form(p: SculptParams) -> tuple[Part, np.ndarray, dict]:
+def sculpt_form(p: SculptParams) -> tuple[Part, np.ndarray, np.ndarray | None, dict]:
     """The solid of the head on the 5 mm part: sampled at 5 mm (``fine``) or at 10 mm, largest
-    component, upsampled x2 (``coarse``). Mirror-exact, one component."""
+    component, upsampled x2 (``coarse``). Mirror-exact, one component. Returns ``(part, solid,
+    field, info)``; ``field`` is the exact signed distance in voxels on the fine grid (None for
+    ``coarse``, whose blocks are the point)."""
     if p.grid not in GRIDS:
         raise ValueError(f"grid must be one of {GRIDS}, got {p.grid!r}")
     part = head_part(p, FINE_VOXEL)
+    field = None
     if p.grid == "fine":
-        solid = form_field(part, p) <= 0.0
+        field = form_field(part, p)
+        solid = field <= 0.0
     else:
         coarse = head_part(p, COARSE_VOXEL)
         solid = form_field(coarse, p) <= 0.0
@@ -311,7 +320,22 @@ def sculpt_form(p: SculptParams) -> tuple[Part, np.ndarray, dict]:
     if n > 1:
         crumbs = int((labels > 1).sum())
         solid = labels == 1
-    return part, solid, {"grid": p.grid, "components": int(n), "crumbs_removed": crumbs, "solid": int(solid.sum())}
+    return part, solid, field, {"grid": p.grid, "components": int(n), "crumbs_removed": crumbs, "solid": int(solid.sum())}
+
+
+def form_sdf(field: np.ndarray, solid: np.ndarray) -> np.ndarray:
+    """The int8 ``sdf`` field of the finished head: the exact ``field`` (voxels) carved by the
+    voxels the build removed from ``field <= 0`` (hair pocket, eye sockets, mirror, crumbs:
+    ``max(d, -d_removed)``, the removed cubes' faces become the surface) and unioned with any it
+    added, quantized consistently with ``solid`` (:func:`voxgen.sdfield.quantize`)."""
+    d = np.asarray(field, np.float32)
+    removed = (d <= 0.0) & ~solid
+    added = solid & (d > 0.0)
+    if removed.any():
+        d = np.maximum(d, -sdfield.signed_distance_vox(removed))
+    if added.any():
+        d = np.minimum(d, sdfield.signed_distance_vox(added))
+    return sdfield.quantize(d, solid)
 
 
 def cartilage_mask(part: Part, p: SculptParams) -> np.ndarray:
@@ -442,7 +466,8 @@ def shades_block(form: np.ndarray, part: Part, p: SculptParams) -> np.ndarray:
 def build_sculpt_head(params: SculptParams | None = None, name: str | None = None) -> Model:
     """The sculpted head as a multi-part model in the local frame of the other heads: metres, the
     chin's bottom near y = 0, centred on x / z, face toward -Z. Parts ``head`` (5 mm, tissues by
-    depth), ``eye_l`` / ``eye_r`` (3 mm balls) or ``shades``, ``hair`` (5 mm)."""
+    depth, the ``sdf`` field on the fine grid), ``eye_l`` / ``eye_r`` (3 mm balls) or ``shades``,
+    ``hair`` (5 mm)."""
     from .multires_head import backfill_z, crop_part, mesh_stats, resample, seam_stats
     from .refhead import carve_sockets
     p = params if params is not None else SculptParams()
@@ -453,7 +478,7 @@ def build_sculpt_head(params: SculptParams | None = None, name: str | None = Non
     pal = make_palette(ToonHeadParams.preset_params("box", skin_tone=p.skin_tone, hair_tone=p.hair_tone,
                                                     iris_tone=p.iris_tone))
     C = pal.index
-    part, form, finfo = sculpt_form(p)
+    part, form, field, finfo = sculpt_form(p)
     vs = part.voxel_size
     nz, ny, nx = part.shape
     grid = meshvox.VoxelGrid(tuple(part.origin), vs, part.dims)
@@ -513,6 +538,12 @@ def build_sculpt_head(params: SculptParams | None = None, name: str | None = Non
     head.color[:] = col
     model.add_part(head)
     model.meta["crumbs_removed"] = keep_largest_component(head)
+    if field is not None:
+        head.sdf = form_sdf(field, head.solid())
+        if not sdfield.is_consistent(head.sdf, head.solid()):
+            raise RuntimeError("sdf field disagrees with the head solid")
+        stats["sdf"] = {"carved": int(((field <= 0.0) & ~head.solid()).sum()),
+                        "min": int(head.sdf.min()), "max": int(head.sdf.max())}
     zero = (0.0, 0.0, 0.0)
 
     # ---- eyeballs with their stalks (as voxgen.refhead)

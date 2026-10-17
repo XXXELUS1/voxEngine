@@ -12,8 +12,7 @@ from voxgen import checks
 from voxgen.body import exposed
 from voxgen.materials import (MAT_BONE, MAT_CLOTH, MAT_EYE, MAT_FAT, MAT_HAIR, MAT_LEATHER, MAT_MUSCLE,
                               MAT_PLANT, MAT_SKIN)
-from voxgen.voxchar import (BEARDS, HAIR_STYLES, HATS, OUTFITS, ROWS, UP, VoxCharParams, build_character,
-                            head_grid)
+from voxgen.voxchar import BEARDS, HAIR_STYLES, HATS, OUTFITS, ROWS, UP, VoxCharParams, build_character
 
 SPEC = Path(__file__).resolve().parents[1] / "specs" / "chars" / "vox" / "coat_guy.py"
 OUTER = {MAT_SKIN, MAT_HAIR, MAT_EYE, MAT_CLOTH, MAT_LEATHER, MAT_PLANT}
@@ -93,12 +92,11 @@ def test_hair_slabs_are_one_mass_on_the_scalp(head_model):
     base = hair.color == pal.index("hair")
     assert light.any() and base.any()
     assert float(np.nonzero(light)[1].min()) > float(np.nonzero(base)[1].max()) - 1   # the lighter slab is the top one
-    g = head_grid()
-    # the fringe hangs in front of the face plane and the forehead above the brows stays bare
+    # the fringe hangs one cell in front of the face plane (the nose tip is 4 fine voxels proud)
     head = head_model.part("head")
     hz = hair.origin[2] + np.nonzero(hair.solid())[0].min() * hair.voxel_size
     fz = head.origin[2] + np.nonzero(head.material == MAT_SKIN)[0].min() * head.voxel_size
-    assert hz < fz + 1e-6 and (g.lo[1] - g.lo[1]) == 0
+    assert hz == pytest.approx(fz - head.voxel_size, abs=1e-6)
 
 
 @pytest.mark.parametrize("hair", HAIR_STYLES)

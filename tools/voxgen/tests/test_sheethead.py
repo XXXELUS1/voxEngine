@@ -327,7 +327,7 @@ def test_ears_mouth_and_nostrils(head):
         assert at(s, sx * 5.25, 5.5, 7.125) != MAT_AIR and at(s, sx * 6.125, 4.5, 7.5) == MAT_AIR
         assert at(s, sx * 5.75, 5.5, 8.5) == MAT_AIR                                          # the notch void
         assert at(s, sx * 5.375, 5.5, 8.5) == MAT_CARTILAGE and at(s, sx * 5.375, 5.5, 8.5, "color") == shadow   # floor
-        assert at(s, sx * 5.75, 5.5, 7.875) == MAT_SKIN and at(s, sx * 5.75, 5.5, 7.875, "color") == shadow  # wall
+        assert at(s, sx * 5.75, 5.5, 7.875) == MAT_CARTILAGE and at(s, sx * 5.75, 5.5, 7.875, "color") == shadow  # wall
         assert at(s, sx * 5.75, 6.125, 8.5, "color") == shadow and at(s, sx * 5.75, 6.375, 8.5, "color") == skin
     # the mouth: 5 U wide, 1 U deep from the face plane behind closed lips (1 fine of skin, the mouth
     # line on the slit row y 3.5..3.75 only), teeth on the back wall

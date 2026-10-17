@@ -308,7 +308,7 @@ def test_skull_profile_from_the_map(head):
     for y, z in ((11.25, 0.5), (12.25, 1.5), (13.25, 2.5)):                                  # the 45-degree dome front
         assert at(s, 0.125, y, z + 0.125) == MAT_SKIN and at(s, 0.125, y, z - 0.125) == MAT_AIR
     assert at(s, 2.375, 13.25, 6) == MAT_SKIN and at(s, 2.625, 13.25, 6) == MAT_AIR         # the dome: y 13..13.5 |x| < 2.5
-    assert at(s, 0.125, 13.75, 6.125) == MAT_SKIN and at(s, 1.125, 13.75, 6.125) == MAT_AIR  # ... y 13.5..14 |x| < 1
+    assert at(s, 1.875, 13.75, 6.125) == MAT_SKIN and at(s, 2.125, 13.75, 6.125) == MAT_AIR  # ... y 13.5..14 |x| < 2
     assert at(s, 0.125, 14.25, 6) == MAT_AIR
     assert at(s, 0.125, 8.75, 12.875) == MAT_SKIN and at(s, 0.125, 8.75, 13.125) == MAT_AIR  # the back at z 13
     assert at(s, 0.125, 2.25, 11.375) == MAT_SKIN and at(s, 0.125, 2.25, 11.625) == MAT_AIR  # the occiput curves in

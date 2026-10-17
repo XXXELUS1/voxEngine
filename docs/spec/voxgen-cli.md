@@ -23,7 +23,7 @@ voxgen preview <file.vxm|.vox|spec.py> [--out x.png] [--size 256] [--part NAME]
 voxgen check <file.vxm>                 печатает отчёт проверок (json) и возвращает 1 при ошибках
 voxgen import-vox <file.vox> --spec-json <file.vox.json> --out <file.vxm>
 voxgen info <file.vxm>                  части, размеры, число вокселей, материалы
-voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,clay,toon,mix]
+voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,slopes,smooth,clay,toon,mix]
               [--light studio|candle] [--views three_quarter,front,profile,back,full] [--size 640] [--samples 96]
               [--bg dark|grey|light] [--part-styles head=smooth,hair=facet] [--smooth-passes 2]
               [--smooth-clamp cell|free] [--smooth-inflate 0] [--no-hermite] [--hermite-passes 0]
@@ -39,7 +39,16 @@ voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,c
     ступеньки скошены под 45°: `mesh.step_edge_weights`, правило в докстринге модуля, `min_run=2` —
     одиночный бугорок остаётся кубом; один плоский материал на цвет палитры, чтобы фаски не смешивали
     цвета; `--jitter` по умолчанию 0; `--facet-step N` — ступенькой считается уступ глубиной N вокселей,
-    фаска 0.5·N воксела: 2 для моделей, нарисованных шагом 1/2 U на сетке 1/4 U), facet_all (скошено каждое ребро 90°), smooth (surface nets,
+    фаска 0.5·N воксела: 2 для моделей, нарисованных шагом 1/2 U на сетке 1/4 U), facet_all (скошено каждое ребро 90°),
+    slopes (кубы, у которых регулярные лесенки становятся плоскими гранями: `mesh_slopes.slope_mesh`, правила
+    в докстринге модуля — по каждому из шести направлений грани образуют карту высот, вдоль каждой оси
+    в плоскости ступеньки классифицируются как 1:1 (45°), 2:1 (26.6°) и 1:2 (63.4°; её строит соседнее
+    направление как 2:1), подъём ≥ `min_run=2` ступеней наклоняет грани, подступёнки между наклонёнными
+    гранями убираются, углы усредняются между гранями одного листа, так что плоскости остаются
+    плоскостями, боковые стенки становятся треугольниками; одиночная ступенька и всё нерегулярное —
+    кубы; без Bevel, один плоский материал на цвет, `--jitter` 0; `--facet-step 2` — те же отношения
+    в удвоенном масштабе (4:2, 2:2, 2:4), а часть, целиком сложенная из 2-вокселей (в любой фазе сетки),
+    строится в грубом масштабе и возвращается в тонкий; `--part-styles skull=slopes`), smooth (surface nets,
     цвет по вокселю), clay (smooth + подповерхностное + «отпечатки»), toon (EEVEE, 3-ступенчатая рампа
     + Freestyle); фон `--bg`: dark, grey, light (тёплый светло-серый мир и пол, экспозиция −0.7);
     в smooth-стилях волосы и зубы по умолчанию — часть гладкой поверхности; `--cubic-materials 5,8`
@@ -47,7 +56,7 @@ voxgen render <model.vxm|spec.py> [--styles cubes,bevel,facet,facet_all,smooth,c
     которой большинство открытых граней — кожа (skin + cartilage), рендерится как smooth (surface nets,
     shade smooth, цвет по вокселю на грань, кожа: roughness 0.6, без бампа, слабый SSS 0.1), остальные
     (волосы, глаза, очки, зубы) — facet; `--part-styles head=smooth,hair=facet` переопределяет карту
-    часть→стиль для любого стиля (стили частей: cubes,bevel,facet,facet_all,smooth,clay). Гладкие части:
+    часть→стиль для любого стиля (стили частей: cubes,bevel,facet,facet_all,slopes,smooth,clay). Гладкие части:
     `--smooth-passes N` (проходов Лапласа, по умолчанию 2), `--smooth-clamp cell|free` (cell — вершины не
     выходят из своей ячейки; free — без зажима, объём восстанавливается общим сдвигом по нормали),
     `--smooth-inflate V` (сдвиг наружу в вокселях, 0..0.5, закрывает щель у кубических волос). Гладкая
@@ -60,7 +69,9 @@ voxgen render-sheet <dir> [--out <dir>/sheet.png] [--tile 640]   пересоб�
 ```
 
 Мешеры `voxgen.mesh` (чистый numpy, без Blender): `culled_quads(part, palette, jitter, ao)`,
-`step_edge_weights(mesh, part, mode='steps'|'all', min_run=2, step=1)` (веса фасок для `facet`) и
+`step_edge_weights(mesh, part, mode='steps'|'all', min_run=2, step=1)` (веса фасок для `facet`),
+`voxgen.mesh_slopes.slope_mesh(solid, color, step=1, min_run=2)` / `slope_mesh_part(part, palette, step)`
+(стиль `slopes`; треугольники хранятся в `quads` как `[a, b, c, c]`) и
 `surface_nets(part, palette, smooth_passes, keep_cubic_materials=(), clamp='cell'|'free', inflate=0,
 hermite=None, hermite_passes=0)` (`hermite=None` — Hermite-режим, если у части есть поле `sdf`) →
 `Mesh` (positions float32 (N,3) в

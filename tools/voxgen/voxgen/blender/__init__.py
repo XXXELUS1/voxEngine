@@ -9,7 +9,9 @@ Styles are per model, ``mix`` is per part: every part whose exposed surface is m
 voxel colours) and every other part (hair, eyes, shades, teeth) ``facet``. ``--part-styles
 "head=smooth,hair=facet"`` overrides the mapping of any style (part name -> one of ``PART_STYLES``).
 A smooth part with the ``sdf`` field is meshed by Hermite surface nets (the exact surface, label
-"nets hermite"); without it the Laplacian-smoothed binary nets ("nets cell x2") are used.
+"nets hermite"); without it the Laplacian-smoothed binary nets ("nets cell x2") are used. ``slopes``
+(``voxgen.mesh_slopes``) is the low-poly facet look: regular staircases become 26.6 / 45 / 63.4
+degree planes, lone steps stay cubes, no Bevel (``--part-styles skull=slopes --facet-step 2``).
 """
 from __future__ import annotations
 
@@ -17,8 +19,8 @@ import numpy as np
 
 from voxgen import materials as M
 
-STYLES = ("cubes", "bevel", "facet", "facet_all", "smooth", "clay", "toon", "mix")
-PART_STYLES = ("cubes", "bevel", "facet", "facet_all", "smooth", "clay")  # toon is model-wide (EEVEE)
+STYLES = ("cubes", "bevel", "facet", "facet_all", "slopes", "smooth", "clay", "toon", "mix")
+PART_STYLES = ("cubes", "bevel", "facet", "facet_all", "slopes", "smooth", "clay")  # toon is model-wide (EEVEE)
 LIGHTS = ("studio", "candle")
 BACKGROUNDS = ("dark", "grey", "light")
 SMOOTH_CLAMPS = ("cell", "free")

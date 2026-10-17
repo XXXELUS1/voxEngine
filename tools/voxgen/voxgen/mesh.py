@@ -64,7 +64,8 @@ _AO_LEVELS = np.array([1.0, 0.78, 0.6, 0.45], np.float32)  # 0fps corner count -
 @dataclass
 class Mesh:
     positions: np.ndarray       # (N, 3) float32 metres, part local space (Godot axes)
-    quads: np.ndarray           # (F, 4) int32 vertex indices, CCW seen from outside
+    quads: np.ndarray           # (F, 4) int32 vertex indices, CCW seen from outside; a row whose last two
+                                #   indices are equal is a triangle (``mesh_slopes``)
     face_colors: np.ndarray     # (F, 4) uint8: sRGB r, g, b of the owning voxel (+ jitter), mean AO * 255
     face_material: np.ndarray   # (F,) uint8 material id of the owning voxel
     corner_ao: np.ndarray       # (F, 4) float32 AO per quad corner in (0, 1]
@@ -78,12 +79,14 @@ class Mesh:
         return int(len(self.quads))
 
     def is_closed(self) -> bool:
-        """True when every edge is shared by exactly two quads (a watertight 2-manifold)."""
+        """True when every edge is shared by exactly two faces (a watertight 2-manifold); the
+        zero-length edge of a ``[a, b, c, c]`` triangle is not an edge."""
         if len(self.quads) == 0:
             return False
         q = self.quads
         e = np.stack([np.concatenate([q[:, i] for i in range(4)]),
                       np.concatenate([q[:, (i + 1) % 4] for i in range(4)])], axis=1)
+        e = e[e[:, 0] != e[:, 1]]
         e.sort(axis=1)
         _, counts = np.unique(e, axis=0, return_counts=True)
         return bool((counts == 2).all())

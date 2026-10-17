@@ -8,7 +8,9 @@ Styles (``voxgen.blender.STYLES``): cubes (culled quads, full AO), bevel (cubes 
 facet (cubes whose one-voxel steps are chamfered to 45 degree slopes: ``mesh.step_edge_weights``
 with ``min_run=2`` + a Bevel limited by edge weight, 0.5 voxel, 1 segment; ``--facet-step 2``
 for 2-voxel steps and a 1 voxel chamfer), facet_all (every
-90 degree edge chamfered), smooth (surface nets, shade smooth, per-face voxel colour, skin material:
+90 degree edge chamfered), slopes (``mesh_slopes.slope_mesh``: cubes whose regular staircases of
+2:1, 1:1 and 1:2 treads:risers become planar facets of 26.6, 45 and 63.4 degrees, lone steps stay
+cubes, no Bevel; ``--facet-step 2`` fits 4:2, 2:2, 2:4, a 2-granular part at its coarse scale), smooth (surface nets, shade smooth, per-face voxel colour, skin material:
 roughness 0.6, no bump, weak subsurface 0.1), clay (smooth + subsurface + thumb-mark bumps), toon
 (EEVEE, 3-step ramp + Freestyle outline), mix (per part: skin parts smooth, the rest facet, see
 ``voxgen.blender.resolve_part_styles``; ``--part-styles head=smooth,hair=facet`` overrides any
@@ -48,12 +50,14 @@ import numpy as np
 import bpy  # noqa: E402
 from mathutils import Vector  # noqa: E402
 
-from voxgen import io_vxm, mesh  # noqa: E402
+from voxgen import io_vxm, mesh, mesh_slopes  # noqa: E402
 from voxgen.blender import (BACKGROUNDS, LIGHTS, SMOOTH_CLAMPS, STYLES, VIEWS, parse_part_styles,  # noqa: E402
                             resolve_part_styles)
 
 SMOOTH_STYLES = ("smooth", "clay", "toon")
 FACET_STYLES = ("facet", "facet_all")
+SLOPE_STYLES = ("slopes",)
+FLAT_STYLES = FACET_STYLES + SLOPE_STYLES  # one flat material per palette colour, jitter 0
 SMOOTH_DEFAULTS = {"passes": 2, "clamp": "cell", "inflate": 0.0, "jitter": 0.04,  # jitter: 0 in mix (flat skin)
                    "hermite": None, "hermite_passes": 0}  # hermite None = when the part has the sdf field
 # background preset -> (world bottom, world top, world strength), ground colour, exposure
@@ -100,17 +104,24 @@ def godot_to_blender(p):
 
 def make_mesh_object(name: str, m: mesh.Mesh):
     """Blender object from a voxgen Mesh: CORNER colour (face colour) + CORNER ao, per-face smooth,
-    material_index 1 for the cubic faces of a smooth mesh."""
+    material_index 1 for the cubic faces of a smooth mesh. A quad whose last two indices are equal
+    is a triangle (``mesh_slopes``)."""
     me = bpy.data.meshes.new(name)
-    me.from_pydata(godot_to_blender(m.positions).tolist(), [], m.quads.tolist())
+    q = m.quads
+    tri = q[:, 2] == q[:, 3]
+    faces = [row[:3] if t else row for row, t in zip(q.tolist(), tri.tolist())] if tri.any() else q.tolist()
+    me.from_pydata(godot_to_blender(m.positions).tolist(), [], faces)
     me.update()
     F = m.n_faces
-    rgb = np.repeat(srgb_to_linear(m.face_colors[:, :3]), 4, axis=0)
-    rgba = np.concatenate([rgb, np.ones((F * 4, 1), np.float32)], axis=1)
+    nl = np.where(tri, 3, 4)
+    loop_face = np.repeat(np.arange(F), nl)
+    loop_corner = np.arange(len(loop_face)) - np.repeat(np.cumsum(nl) - nl, nl)
+    rgb = srgb_to_linear(m.face_colors[:, :3])[loop_face]
+    rgba = np.concatenate([rgb, np.ones((len(loop_face), 1), np.float32)], axis=1)
     col = me.color_attributes.new(name="Col", type="FLOAT_COLOR", domain="CORNER")
     col.data.foreach_set("color", rgba.ravel())
     aoa = me.attributes.new(name="ao", type="FLOAT", domain="CORNER")
-    aoa.data.foreach_set("value", m.corner_ao.astype(np.float32).ravel())
+    aoa.data.foreach_set("value", m.corner_ao[loop_face, loop_corner].astype(np.float32).ravel())
     me.polygons.foreach_set("use_smooth", m.face_smooth.tolist())
     if m.face_smooth.any():
         me.polygons.foreach_set("material_index", (~m.face_smooth).astype(np.int32).tolist())
@@ -530,6 +541,12 @@ def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float |
                                   hermite=bool(hermite), hermite_passes=int(smooth["hermite_passes"]))
             if m.hermite:
                 hermite_parts.append(part.name or f"part{i}")
+        elif style in SLOPE_STYLES:
+            j = jitter if jitter is not None else 0.0
+            st = {}
+            m = mesh_slopes.slope_mesh_part(part, model.palette, step=int(facet_step), min_run=2, jitter=j, stats=st)
+            for key in ("faces_in", "faces_sloped", "risers_dropped", "triangles", "faces_out"):
+                chamfer["slopes_" + key] = chamfer.get("slopes_" + key, 0) + int(st.get(key, 0))
         else:
             j = jitter if jitter is not None else (0.0 if style in FACET_STYLES else 0.06)
             m = mesh.culled_quads(part, model.palette, jitter=j, ao=True)
@@ -539,6 +556,8 @@ def build_geometry(model, part_styles: dict, cubic_materials=(), jitter: float |
         objs.append(ob)
         styles.append(style)
         faces += m.n_faces
+        if style in SLOPE_STYLES:
+            assign_palette_materials(ob, m, mat_cache)
         if style in FACET_STYLES:
             assign_palette_materials(ob, m, mat_cache)
             ew = mesh.step_edge_weights(m, part, mode="all" if style == "facet_all" else "steps", min_run=2,
@@ -586,7 +605,7 @@ def assign_materials(objs, styles, voxel_size: float):
     already carry their per-colour flat materials from ``build_geometry``."""
     cache = {}
     for ob, style in zip(objs, styles):
-        if style in FACET_STYLES:
+        if style in FLAT_STYLES:
             continue
         m, cubic = style_materials(style, cache)
         ob.data.materials.append(m)
@@ -616,9 +635,9 @@ def render_one(model_path, style, light, view, size, samples, out, bg="dark", en
 
     t0 = time.time()
     if jitter is None:
-        jitter = 0.0 if style in FACET_STYLES or style == "mix" else 0.06
+        jitter = 0.0 if style in FLAT_STYLES or style == "mix" else 0.06
     smooth = {**SMOOTH_DEFAULTS, **(smooth or {})}
-    if style == "mix" or (jitter == 0.0 and style in FACET_STYLES):
+    if style == "mix" or (jitter == 0.0 and style in FLAT_STYLES):
         smooth["jitter"] = jitter  # flat palette colours on the smooth skin too (the stylized look)
     mapping = resolve_part_styles(model, style, part_styles)
     objs, styles, bmin, bmax, faces, chamfer, hermite_parts = build_geometry(model, mapping, cubic_materials, jitter,
@@ -694,7 +713,8 @@ def main(argv=None) -> int:
                     help="per-voxel colour jitter of the cube mesher (default 0.06, facet/mix styles 0; 0 = none)")
     ap.add_argument("--part-styles", default="", help="per-part overrides, e.g. head=smooth,hair=facet")
     ap.add_argument("--facet-step", type=int, default=1,
-                    help="tread depth in voxels that counts as a step for facet (chamfer 0.5*N voxel; default 1)")
+                    help="tread depth in voxels that counts as a step for facet (chamfer 0.5*N voxel) and slopes "
+                         "(patterns scaled by N); default 1")
     ap.add_argument("--smooth-passes", type=int, default=SMOOTH_DEFAULTS["passes"],
                     help="Laplacian passes of the smooth parts (default 2)")
     ap.add_argument("--smooth-clamp", default=SMOOTH_DEFAULTS["clamp"], choices=SMOOTH_CLAMPS,

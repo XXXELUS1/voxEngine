@@ -272,22 +272,13 @@ def test_parts_order_and_materials(head):
         p = head.part(name)
         assert set(p.material[p.solid()].tolist()) == mats, name
     assert head.meta["generator"] == "sheethead" and head.meta["layers"]["face"][0]["empty_cells"] == 0
-    assert head.meta["mid_z"] == SKULL_MID_Z and head.meta["layers"]["face"][0]["cut"] == 272
+    assert head.meta["mid_z"] == SKULL_MID_Z and head.meta["layers"]["face"][0]["cut"] == 2 * 10 * 6 * 2 + 8 * 2 * 2
 
 
-@pytest.mark.xfail(strict=True, reason="barber_maps: HAIR_FRONT rows 3-5 cols 22-23 (the right temple tuft 'b', "
-                   "x 4..5, y 9..10.5) touch no other hair, and HAIR_SIDE row 16 col 26 (y 3.5..4, z 11.5..12) is "
-                   "pinched to 8 voxels a side: hair islands resting on the skull. Remove this marker once the maps "
-                   "are fixed.")
 def test_checks_clean(head):
+    """Hair/beard islands resting on the skull count as attached (checks.other_parts_anchor)."""
     report = checks.run(head)
     assert report["errors"] == []
-
-
-def test_check_errors_are_only_islands_resting_on_other_parts(head):
-    report = checks.run(head)
-    assert all("floating component" in e for e in report["errors"]), report["errors"]
-    assert len(report["errors"]) == len(head.meta["islands"])
     for isl in head.meta["islands"]:
         assert isl["resting_on"], isl
     assert [w for w in report["warnings"] if "enclosed air pocket" not in w] == []     # the sealed mouth, by design
@@ -310,13 +301,13 @@ def test_skull_profile_from_the_map(head):
         assert at(s, 0.125, y, front + 0.125) == MAT_SKIN and at(s, 0.125, y, front - 0.125) == MAT_AIR
     assert at(s, 0.125, 8.25, 0.125) == MAT_SKIN and at(s, 0.125, 8.25, -0.125) == MAT_AIR   # the bridge ends at y 8
     assert at(s, 0.125, 1.75, -0.375) == MAT_SKIN and at(s, 0.125, 1.75, -0.625) == MAT_AIR  # chin 1/2 U proud
-    assert at(s, 1.875, 1.75, -0.375) == MAT_SKIN and at(s, 2.125, 1.75, -0.375) == MAT_AIR  # ... and 4 wide
+    assert at(s, 2.375, 1.75, -0.375) == MAT_SKIN and at(s, 2.625, 1.75, -0.375) == MAT_AIR  # ... and 5 wide
     assert at(s, 3.875, 5, 0.125) == MAT_SKIN and at(s, 4.125, 5, 0.125) == MAT_AIR         # cheek plane 8 wide
     assert at(s, 4.125, 5, 0.625) == MAT_SKIN                                                # 9 wide from z 0.5
     assert at(s, 4.875, 9, 6) == MAT_SKIN and at(s, 5.125, 9, 6) == MAT_AIR                 # sides 10 wide
-    for y, z in ((11.25, 1.5), (11.75, 2.0)):                                                # the sloping forehead
+    for y, z in ((11.25, 0.5), (12.25, 1.5), (13.25, 2.5)):                                  # the 45-degree dome front
         assert at(s, 0.125, y, z + 0.125) == MAT_SKIN and at(s, 0.125, y, z - 0.125) == MAT_AIR
-    assert at(s, 0.125, 13.25, 6) == MAT_SKIN and at(s, 2.125, 13.25, 6) == MAT_AIR         # the dome: y 13..13.5 |x| < 2
+    assert at(s, 2.375, 13.25, 6) == MAT_SKIN and at(s, 2.625, 13.25, 6) == MAT_AIR         # the dome: y 13..13.5 |x| < 2.5
     assert at(s, 0.125, 13.75, 6.125) == MAT_SKIN and at(s, 1.125, 13.75, 6.125) == MAT_AIR  # ... y 13.5..14 |x| < 1
     assert at(s, 0.125, 14.25, 6) == MAT_AIR
     assert at(s, 0.125, 8.75, 12.875) == MAT_SKIN and at(s, 0.125, 8.75, 13.125) == MAT_AIR  # the back at z 13
@@ -366,15 +357,16 @@ def test_face_features(head):
     # the eyes: 2 fine cut, the frame / white / pupil painted on the new front-most voxel, skin behind it
     for x, colour, mat in ((-3.375, "eye_frame", MAT_SKIN), (-2.875, "eye_white", MAT_EYE), (-2.125, "pupil", MAT_EYE),
                            (2.125, "pupil", MAT_EYE), (3.375, "eye_frame", MAT_SKIN)):
-        assert at(s, x, 7.125, 0.125) == MAT_AIR and at(s, x, 7.125, 0.375) == MAT_AIR
-        assert at(s, x, 7.125, 0.625) == mat and at(s, x, 7.125, 0.625, "color") == pal.index(colour), x
-        assert at(s, x, 7.125, 0.875) == MAT_SKIN
-    assert at(s, -1.125, 7.125, 0.375) == MAT_AIR and at(s, -0.875, 7.125, 0.375) == MAT_SKIN   # socket's inner wall re-skinned
+        assert at(s, x, 6.625, 0.125) == MAT_AIR and at(s, x, 6.625, 0.375) == MAT_AIR
+        assert at(s, x, 6.625, 0.625) == mat and at(s, x, 6.625, 0.625, "color") == pal.index(colour), x
+        assert at(s, x, 6.625, 0.875) == MAT_SKIN
+    assert at(s, -1.125, 6.625, 0.375) == MAT_AIR and at(s, -0.875, 6.625, 0.375) == MAT_SKIN   # socket's inner wall re-skinned
+    assert at(s, -2, 7.625, 0.125) == MAT_SKIN                                                   # lid skin between brow and eye
     # brows (hair, in the skull part), the moustache (beard part), the light cheek and lip, the philtrum
     assert at(s, -2, 8.5, -0.25) == MAT_HAIR and at(s, -2, 8.5, -0.25, "color") == pal.index("hair_black")
     assert at(s, 0.125, 8.5, -0.25) == MAT_AIR
     assert at(beard, 0, 3.5, -0.25) == MAT_HAIR and at(beard, 0, 3.5, -0.25, "color") == pal.index("hair_black")
-    assert at(s, -3.5, 6, 0.125, "color") == pal.index("skin_light") and at(s, 0.125, 2.75, 0.125, "color") == pal.index("skin_light")
+    assert at(s, -3.5, 5.5, 0.125, "color") == pal.index("skin_light") and at(s, 0.125, 2.75, 0.125, "color") == pal.index("skin_light")
     assert at(s, 0.125, 4.25, 0.125) == MAT_AIR and at(s, 0.125, 4.25, 0.375) == MAT_AIR
     assert at(s, 0.125, 4.25, 0.625) == MAT_SKIN and at(s, 0.125, 4.25, 0.625, "color") == pal.index("skin")
     assert at(s, 0.125, 4.25, 0.875) == MAT_SKIN
@@ -410,8 +402,8 @@ def test_layers_never_touch_the_skull(built, maps):
     for n in EAR_NOTCHES:
         base &= ~f.mask(n)
     removed = base & ~parts["skull"].solid()               # only the eye and philtrum recesses take skull voxels away
-    sockets = f.box(-3.5, -1, 6.5, 8, 0, 0.5) | f.box(1, 3.5, 6.5, 8, 0, 0.5) | f.box(-1, 1, 4, 4.5, 0, 0.5)
-    assert removed.sum() == 272 and not (removed & ~sockets).any()
+    sockets = f.box(-3.5, -1, 6, 7.5, 0, 0.5) | f.box(1, 3.5, 6, 7.5, 0, 0.5) | f.box(-1, 1, 4, 4.5, 0, 0.5)
+    assert removed.sum() == 2 * 10 * 6 * 2 + 8 * 2 * 2 and not (removed & ~sockets).any()
     assert (parts["skull"].solid() & ~base).sum() == 192 + len(TEETH_X) * 2 * 2   # the brows and the teeth
 
 
